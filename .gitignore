@@ -1,0 +1,8 @@
+.env
+data/
+data/dryrun/
+logs/
+backups/
+models/*.pkl
+__pycache__/
+.pytest_cache/
