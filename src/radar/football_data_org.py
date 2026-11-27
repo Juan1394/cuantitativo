@@ -54,18 +54,3 @@ class FootballDataOrgClient:
             competition_code,
         )
         return None
-
-    def get_match(self, match_id: int) -> dict[str, Any] | None:
-        """Consulta un partido por ID; cada intento cuenta en el límite/minuto."""
-        payload = get_json(
-            f"{self.BASE_URL}/matches/{match_id}",
-            headers=self._headers(),
-            params={},
-            before_attempt=self._consume_attempt,
-        )
-        if isinstance(payload, dict) and payload.get("error") == "rate_limit":
-            return None
-        if isinstance(payload, dict):
-            return payload
-        logger.warning("football_data_org_unexpected_response match_id=%s", match_id)
-        return None

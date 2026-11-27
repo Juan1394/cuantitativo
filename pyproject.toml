@@ -1,0 +1,8 @@
+# El umbral de cobertura se verifica en CI con: pytest tests/ --cov=src --cov-fail-under=85.
+# Para rondas focalizadas, usar: pytest tests/test_radar/ --cov=src/radar --cov-report=term-missing (sin fail-under).
+[tool.coverage.run]
+source = ["src"]
+omit = []
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]

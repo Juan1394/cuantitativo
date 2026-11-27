@@ -24,6 +24,11 @@ def setup_client(tmp_path):
     return FootballDataOrgClient(settings, budget), budget
 
 
+@pytest.fixture
+def client(setup_client):
+    return setup_client[0]
+
+
 def test_get_matches_mapea_competicion_a_endpoint_y_token(httpx_mock, setup_client):
     client, budget = setup_client
     # Forma documentada de la respuesta de /competitions/{code}/matches.
@@ -75,3 +80,23 @@ def test_missing_key_raises_before_consuming(setup_client):
         FootballDataOrgClient(SimpleNamespace(football_data_org_key=None), budget)
 
     assert budget.get_remaining("football_data_org", "minute") == before == 10
+
+
+def test_get_match_no_existe(client):
+    assert not hasattr(client, "get_match")
+
+
+def test_competition_code_invalido_lanza_valueerror(client):
+    with pytest.raises(ValueError, match="no admitido"):
+        client.get_matches("XX", "2030-01-01", "2030-01-02")
+
+
+def test_matches_key_ausente_devuelve_none(httpx_mock, client, caplog):
+    httpx_mock.add_response(
+        status_code=200,
+        json={"filters": {}, "resultSet": {}},
+        is_optional=True,
+    )
+
+    assert client.get_matches("SP1", "2030-01-01", "2030-01-02") is None
+    assert "missing_expected_key" in caplog.text
