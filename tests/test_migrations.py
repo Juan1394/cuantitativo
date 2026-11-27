@@ -546,11 +546,10 @@ def test_0007_recrea_snapshots_con_skip_reasons_extendidos(tmp_path):
         )
         conn.commit()
 
-        assert apply_migrations(conn, MIGRATIONS_DIR) == [
-            "0007_extend_snapshot_skip_reasons.sql",
-            "0008_team_aliases.sql",
-        ]
-        assert get_current_version(conn) == 8
+        applied = apply_migrations(conn, MIGRATIONS_DIR)
+        assert "0007_extend_snapshot_skip_reasons.sql" in applied
+        expected_final = max(v for v, _ in list_migrations(MIGRATIONS_DIR))
+        assert get_current_version(conn) == expected_final
         row = conn.execute(
             "SELECT event_id, market, selection, odds, source, status, skip_reason, "
             "captured_at_utc FROM snapshots"
