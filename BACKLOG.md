@@ -81,3 +81,34 @@ Items conocidos que no bloquean Fase 1 y se abordan post-Fase 3, cuando haya dat
 - **Severidad:** BAJA
 - **Cobertura actual:** 85% (20 statements sin cubrir en paths de error)
 - **Fase recomendada:** post-Fase 3
+
+## Normalization · test_abbreviation insuficiente
+
+- **Severidad:** BAJA
+- **Motivo:** test_normalize_team_name_abbreviation no demuestra Utd→United. El seed no tiene Newcastle.
+- **Fase recomendada:** post-Fase 3 (ampliar seed en migración futura)
+
+## Normalization · test_ambiguous no verifica warning
+
+- **Severidad:** BAJA
+- **Motivo:** test_normalize_team_name_ambiguous_returns_none no usa caplog para verificar "ambiguous_fuzzy_match".
+- **Fase recomendada:** post-Fase 3
+
+## Normalization · cobertura al 88%
+
+- **Severidad:** BAJA
+- **Cobertura actual:** 88% (paths de error no cubiertos)
+- **Fase recomendada:** post-Fase 3
+
+## Snapshot recorder · cobertura al 91%
+
+- **Severidad:** BAJA
+- **Cobertura actual:** 91% (paths de error no cubiertos)
+- **Fase recomendada:** post-Fase 3
+
+## PROCESO · Hardcode de versión en tests de migración
+
+- **Severidad:** MEDIA (deuda de proceso, no técnica)
+- **Motivo:** el patrón "assert user_version == N" ha reaparecido 4 veces en 4 rondas con migración nueva (0006, 0007, 0008, 0009). Cada vez se ha corregido, y cada vez vuelve cuando se añade una migración.
+- **Acción de proceso:** en cada prompt que añada migración, incluir sección "MIGRACIONES AFECTADAS" con la regla explícita: "Ningún test nuevo debe verificar user_version == N. Derivar de list_migrations(). Si necesitas verificar estado intermedio, aplicar solo hasta esa migración y derivar de la lista filtrada."
+- **Fase recomendada:** aplica a todos los prompts futuros con migración (0010+, 0011+, etc.)
