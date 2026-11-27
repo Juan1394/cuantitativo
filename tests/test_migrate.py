@@ -70,6 +70,9 @@ def test_db_y_both_es_rechazado(tmp_path):
 
 
 def test_both_sin_db_migra_ambas(tmp_path):
+    from src.migrations import list_migrations
+
+    expected_version = max(v for v, _ in list_migrations(ROOT / "migrations"))
     env = _clean_environment()
     env.update(
         {
@@ -93,4 +96,4 @@ def test_both_sin_db_migra_ambas(tmp_path):
     audit_db = ROOT / "data" / "dryrun" / "audit.db"
     for database in (bets_db, audit_db):
         with sqlite3.connect(database) as conn:
-            assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == expected_version

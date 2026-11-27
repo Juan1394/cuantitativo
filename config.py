@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     snapshot_near_window_h: int = 6
     snapshot_daily_cap_pct: float = 0.70
     snapshot_min_valid_per_event: int = 3
+    snapshot_execution_enabled: bool = False
     closure_grace_period_min: int = 120
     scheduler_interval_min: int = 10
     retrain_every_n_matches: int = 10
@@ -172,6 +173,13 @@ class Settings(BaseSettings):
             "timezone",
             "debe ser una zona horaria IANA válida",
         )
+
+        if self.snapshot_execution_enabled:
+            self._require(
+                self.sharp_odds_provider == "the_odds_api",
+                "snapshot_execution_enabled",
+                "requiere sharp_odds_provider='the_odds_api'",
+            )
 
         if self.sharp_odds_fallback_provider is None:
             self._require(

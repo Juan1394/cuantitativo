@@ -398,7 +398,7 @@ def test_0005_con_filas_hijas(tmp_path):
 
         applied = apply_migrations(conn, MIGRATIONS_DIR)
 
-        assert applied == ["0005_bets_constraints.sql", "0006_rate_limit_budget.sql"]
+        assert "0005_bets_constraints.sql" in applied
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert tuple(
             conn.execute("SELECT * FROM bets WHERE bet_id = ?", (bet_id,)).fetchone()
@@ -517,5 +517,72 @@ def test_0005_rollback_si_fk_check_falla(tmp_path):
         assert get_current_version(conn) == 4
         assert conn.execute("SELECT count(*) FROM scheduled_closures").fetchone()[0] == 0
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_0007_recrea_snapshots_con_skip_reasons_extendidos(tmp_path):
+    v6_dir = tmp_path / "migrations_v6"
+    v6_dir.mkdir()
+    for version, path in list_migrations(MIGRATIONS_DIR):
+        if version <= 6:
+            shutil.copy2(path, v6_dir / path.name)
+
+    conn = get_connection(tmp_path / "v6_snapshots.db")
+    try:
+        apply_migrations(conn, v6_dir)
+        conn.execute(
+            "INSERT INTO events (event_id, competition_code, home_team, away_team, "
+            "kickoff_utc, match_status, created_at_utc, updated_at_utc) "
+            "VALUES ('event-0007', 'SP1', 'Home', 'Away', '2030-01-01T12:00:00+00:00', "
+            "'scheduled', '2029-12-01T00:00:00+00:00', '2029-12-01T00:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO snapshots "
+            "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
+            "VALUES ('event-0007', '1X2', 'HOME', 0, 'system', 'skipped', "
+            "'daily_cap_reached', '2029-12-31T12:00:00+00:00')"
+        )
+        conn.commit()
+
+        assert apply_migrations(conn, MIGRATIONS_DIR) == [
+            "0007_extend_snapshot_skip_reasons.sql"
+        ]
+        assert get_current_version(conn) == 7
+        row = conn.execute(
+            "SELECT event_id, market, selection, odds, source, status, skip_reason, "
+            "captured_at_utc FROM snapshots"
+        ).fetchone()
+        assert tuple(row) == (
+            "event-0007",
+            "1X2",
+            "HOME",
+            0.0,
+            "system",
+            "skipped",
+            "daily_cap_reached",
+            "2029-12-31T12:00:00+00:00",
+        )
+        conn.execute(
+            "INSERT INTO snapshots "
+            "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
+            "VALUES ('event-0007', '1X2', 'HOME', 0, 'system', 'skipped', "
+            "'budget_exhausted', '2029-12-31T12:01:00+00:00')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO snapshots "
+                "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
+                "VALUES ('event-0007', '1X2', 'HOME', 0, 'system', 'skipped', "
+                "'foo', '2029-12-31T12:02:00+00:00')"
+            )
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        index_names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='snapshots'"
+            )
+        }
+        assert {"idx_snapshots_event_captured", "idx_snapshots_status"}.issubset(index_names)
     finally:
         conn.close()
