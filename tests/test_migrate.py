@@ -8,10 +8,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _clean_environment():
-    return {
+    env = {
         "PATH": os.environ.get("PATH", ""),
         "PYTHONIOENCODING": "utf-8",
     }
+    system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT")
+    if system_root:
+        env["SystemRoot"] = system_root
+    return env
 
 
 def test_migrate_db_no_exige_api_keys(tmp_path):

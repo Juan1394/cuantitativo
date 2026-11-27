@@ -43,12 +43,15 @@ def get_json(
     timeout: int = 10,
     before_attempt: Callable[[], bool] | None = None,
 ) -> dict[str, Any] | list[Any] | None:
-    """Solicita JSON con errores HTTP explícitos y reintentos solo para 5xx.
+    """Solicita JSON; reintenta hasta dos veces solo para respuestas 5xx.
 
-    `list` es necesario además de `dict` porque varios endpoints de proveedores
-    devuelven arrays JSON en la raíz. Para un 429 se devuelve un objeto con
-    `error=rate_limit`; los fallos HTTP restantes y los errores de red devuelven
-    `None`.
+    Retorno:
+    - HTTP 2xx con JSON parseable: ``dict`` o ``list``, tal cual lo entrega el proveedor.
+    - HTTP 429: ``None``; `retry_after_seconds` se registra como WARNING, no se devuelve.
+    - HTTP 5xx tras los reintentos: ``None``.
+    - HTTP 4xx, JSON inválido o cuerpo vacío: ``None``.
+
+    Los errores NUNCA se devuelven como valor; van al log.
     """
     _LAST_STATUS_CODE.set(None)
     for attempt in range(3):
