@@ -21,3 +21,11 @@ Los contadores se guardan en `rate_limit_budget`; aplicar `migrations/0006_rate_
 ## Añadir un proveedor
 
 Añade su par proveedor/ventana y límite en `PROVIDER_LIMITS`, crea una migración si requiere persistencia adicional, y consume con `RateLimitBudgetManager.consume` antes de la petición. El gestor serializa escrituras por transacción SQLite y no depende de código específico de endpoints; no modifiques sus contadores directamente desde clientes.
+
+## Snapshot recorder
+
+`SnapshotRecorder` agrupa los planes por liga y realiza una sola llamada de The Odds API por competición, no una llamada por evento. Esta agrupación es crítica para respetar el presupuesto mensual de 500 créditos. La ejecución está protegida por `snapshot_execution_enabled=False` por defecto; solo se habilita explícitamente cuando el proveedor sharp es The Odds API.
+
+Los resultados usan `valid` cuando se escriben cuotas sharp, `gap` para fallos o eventos ausentes, y `skipped` cuando no corresponde guardar cuotas. Los `skip_reasons` admitidos son `daily_cap_reached`, `too_far_from_kickoff`, `budget_exhausted`, `no_odds_available`, `league_not_in_response`, `api_error` y `dry_run_disabled`.
+
+La política que decide qué eventos deben planificarse (límites diarios, ventanas y prioridades de negocio) pertenece a Fase 3, no al recorder. El plan solo filtra estado, kickoff y competiciones activas, y evita capturas demasiado recientes.

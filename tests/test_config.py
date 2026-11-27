@@ -44,6 +44,20 @@ def test_validadores_numericos_y_timezone_rechazan_valores_invalidos(
         )
 
 
+def test_snapshot_execution_enabled_default_false(monkeypatch):
+    monkeypatch.delenv("SNAPSHOT_EXECUTION_ENABLED", raising=False)
+    _, Settings = _settings_class(monkeypatch)
+
+    settings = Settings(
+        _env_file=None,
+        api_football_key="test-football",
+        football_data_org_key="test-data-org",
+        sharp_odds_api_key="test-sharp",
+    )
+
+    assert settings.snapshot_execution_enabled is False
+
+
 def test_rutas_de_base_de_datos_son_absolutas_desde_otro_cwd(
     monkeypatch, tmp_path
 ):
@@ -59,3 +73,17 @@ def test_rutas_de_base_de_datos_son_absolutas_desde_otro_cwd(
 
     assert settings.db_paths.bets.is_absolute()
     assert settings.db_paths.bets == PROJECT_ROOT / "data" / "bets.db"
+
+
+def test_snapshot_execution_enabled_default_false(monkeypatch):
+    monkeypatch.delenv("SNAPSHOT_EXECUTION_ENABLED", raising=False)
+    _, Settings = _settings_class(monkeypatch)
+
+    settings = Settings(
+        _env_file=None,
+        api_football_key="test-football",
+        football_data_org_key="test-data-org",
+        sharp_odds_api_key="test-sharp",
+    )
+
+    assert settings.snapshot_execution_enabled is False

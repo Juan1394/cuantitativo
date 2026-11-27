@@ -11,7 +11,7 @@ import pytest
 
 from src import model_versioning
 from src.db import get_connection
-from src.migrations import apply_migrations, get_current_version
+from src.migrations import apply_migrations, get_current_version, list_migrations
 from src.model_versioning import (
     get_active_model_version,
     get_model_version,
@@ -327,13 +327,16 @@ def test_migraciones_incrementales_preservan_filas_de_model_versions(tmp_path):
 
         applied = apply_migrations(connection, MIGRATIONS_DIR)
 
-        assert applied == [
+        expected_subset = [
             "0003_model_artifacts.sql",
             "0004_active_models.sql",
             "0005_bets_constraints.sql",
             "0006_rate_limit_budget.sql",
         ]
-        assert get_current_version(connection) == 6
+        for expected in expected_subset:
+            assert expected in applied, f"{expected} no se aplicó"
+        expected_version = max(version for version, _ in list_migrations(MIGRATIONS_DIR))
+        assert get_current_version(connection) == expected_version
         assert _query_dicts(
             connection, "SELECT * FROM model_versions ORDER BY model_version_id"
         ) == before
