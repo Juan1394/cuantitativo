@@ -1,3 +1,4 @@
+# REGLA: ningún test debe hardcodear la versión final; derivarla de list_migrations(MIGRATIONS_DIR).
 import inspect
 import shutil
 import sqlite3
