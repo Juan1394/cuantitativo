@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import shutil
 from datetime import datetime as real_datetime
 from itertools import count
@@ -375,3 +376,45 @@ def test_promote_activa_version_sin_artefacto_falla(conn):
     ).fetchone()
     assert active[0] == previous
     assert conn.execute("SELECT count(*) FROM audit_log").fetchone()[0] == 1
+
+
+def test_artefacto_directorio_rechazado(conn):
+    previous_path = Path("models/sp1_v1.pkl")
+    directory_path = Path("models/directory.pkl")
+    previous = _register(conn, model_path=previous_path)
+    target = _register(conn, model_path=directory_path)
+    promote_model_version(conn, "SP1", previous)
+
+    directory_path.unlink()
+    directory_path.mkdir()
+
+    with pytest.raises(
+        FileNotFoundError,
+        match=f"model_version {target} artifact not found: {directory_path}",
+    ):
+        rollback_active_model(conn, "SP1", target)
+
+    active = conn.execute(
+        "SELECT model_version_id FROM active_models WHERE competition_code = ?",
+        ("SP1",),
+    ).fetchone()
+    assert active[0] == previous
+
+
+def test_fallback_ignora_version_sin_archivo(conn, caplog):
+    first = _register(conn, model_path=Path("models/sp1_v1.pkl"))
+    second_path = Path("models/sp1_v2.pkl")
+    second = _register(conn, model_path=second_path)
+    second_path.unlink()
+    conn.execute("DELETE FROM active_models")
+    conn.commit()
+
+    with caplog.at_level(logging.WARNING, logger=model_versioning.__name__):
+        assert get_active_model_version(conn, "SP1") is None
+
+    assert any(
+        record.levelno == logging.WARNING
+        and str(second) in record.getMessage()
+        for record in caplog.records
+    )
+    assert first != second

@@ -1,9 +1,12 @@
 """Conexiones SQLite y transacciones explícitas."""
 
+import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_dir(db_path: Path) -> None:
@@ -37,4 +40,11 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
             pass
         raise
     else:
-        conn.execute("COMMIT")
+        try:
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                logger.error("rollback after failed commit failed", exc_info=True)
+            raise

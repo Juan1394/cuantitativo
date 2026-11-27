@@ -338,3 +338,125 @@ def test_comentario_dentro_de_string_no_corta(tmp_path):
         assert conn.execute("SELECT name FROM teams").fetchone()[0] == "Team -- A"
     finally:
         conn.close()
+
+
+def test_0005_con_filas_hijas(tmp_path):
+    v4_dir = _create_v4_migrations_dir(tmp_path)
+    conn = get_connection(tmp_path / "v4_children.db")
+    try:
+        apply_migrations(conn, v4_dir)
+        _insert_valid_bet(conn, "event-child", "bet-child")
+        bet_id = conn.execute(
+            "SELECT bet_id FROM bets WHERE idempotency_key = 'bet-child'"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO model_versions "
+            "(competition_code, train_until_utc, matches_count, hyperparams_json, "
+            "created_at_utc) VALUES ('SP1', '2025-12-31T23:59:59Z', 10, '{}', "
+            "'2026-01-01T00:00:00Z')"
+        )
+        model_version_id = conn.execute(
+            "SELECT model_version_id FROM model_versions WHERE competition_code='SP1'"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO scheduled_closures (bet_id, scheduled_for_utc, status) "
+            "VALUES (?, '2026-01-01T00:00:00Z', 'pending')",
+            (bet_id,),
+        )
+        conn.execute(
+            "INSERT INTO closing_odds "
+            "(bet_id, closing_odds, source, fallback_reason, captured_at_utc) "
+            "VALUES (?, 2.1, 'book', NULL, '2026-01-01T00:00:00Z')",
+            (bet_id,),
+        )
+        conn.execute(
+            "INSERT INTO clv_records "
+            "(bet_id, clv_pct, entry_implied_prob, closing_fair_prob, "
+            "beat_closing_line, calculated_at_utc) "
+            "VALUES (?, 0.1, 0.5, 0.45, 1, '2026-01-01T00:00:00Z')",
+            (bet_id,),
+        )
+        conn.execute(
+            "INSERT INTO bankroll_history "
+            "(amount_delta, balance_after, reason, bet_id, created_at_utc) "
+            "VALUES (-10, 90, 'bet placed', ?, '2026-01-01T00:00:00Z')",
+            (bet_id,),
+        )
+        conn.execute(
+            "INSERT INTO decision_explanation "
+            "(bet_id, model_version_id, decision_rules_version, devig_method, "
+            "model_probability, implied_probability, ev, edge_pct, decision, "
+            "reasons_json) VALUES (?, ?, 'v1', 'multiplicative', 0.5, 0.48, "
+            "0.1, 0.02, 'bet', '[]')",
+            (bet_id, model_version_id),
+        )
+        conn.commit()
+        bet_before = tuple(
+            conn.execute("SELECT * FROM bets WHERE bet_id = ?", (bet_id,)).fetchone()
+        )
+
+        applied = apply_migrations(conn, MIGRATIONS_DIR)
+
+        assert applied == ["0005_bets_constraints.sql"]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert tuple(
+            conn.execute("SELECT * FROM bets WHERE bet_id = ?", (bet_id,)).fetchone()
+        ) == bet_before
+        for table in (
+            "scheduled_closures",
+            "closing_odds",
+            "clv_records",
+            "bankroll_history",
+            "decision_explanation",
+        ):
+            row = conn.execute(
+                f"SELECT bet_id FROM {table} WHERE bet_id = ?", (bet_id,)
+            ).fetchone()
+            assert row is not None
+            assert row[0] == bet_id
+    finally:
+        conn.close()
+
+
+def test_0005_conserva_secuencia_ids(tmp_path):
+    v4_dir = _create_v4_migrations_dir(tmp_path)
+    conn = get_connection(tmp_path / "v4_sequence.db")
+    try:
+        apply_migrations(conn, v4_dir)
+        for index in range(1, 4):
+            _insert_valid_bet(conn, f"event-seq-{index}", f"bet-seq-{index}")
+        conn.execute("DELETE FROM bets WHERE bet_id = 2")
+        conn.commit()
+
+        apply_migrations(conn, MIGRATIONS_DIR)
+        _insert_valid_bet(conn, "event-seq-4", "bet-seq-4")
+        new_bet_id = conn.execute(
+            "SELECT bet_id FROM bets WHERE idempotency_key = 'bet-seq-4'"
+        ).fetchone()[0]
+        assert new_bet_id == 4
+    finally:
+        conn.close()
+
+
+def test_0005_rollback_si_fk_check_falla(tmp_path):
+    v4_dir = _create_v4_migrations_dir(tmp_path)
+    conn = get_connection(tmp_path / "v4_fk_failure.db")
+    try:
+        apply_migrations(conn, v4_dir)
+        bad_migrations = tmp_path / "bad_migrations"
+        bad_migrations.mkdir()
+        (bad_migrations / "0005_orphan.sql").write_text(
+            "INSERT INTO scheduled_closures "
+            "(bet_id, scheduled_for_utc, status) "
+            "VALUES (999999, '2026-01-01T00:00:00Z', 'pending');\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="foreign key violations"):
+            apply_migrations(conn, bad_migrations)
+
+        assert get_current_version(conn) == 4
+        assert conn.execute("SELECT count(*) FROM scheduled_closures").fetchone()[0] == 0
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        conn.close()
