@@ -31,26 +31,33 @@ def audit(
             canonical_payload.encode("utf-8")
         ).hexdigest()
         created_at_utc = datetime.now(timezone.utc).isoformat()
-
-        with conn:
-            conn.execute(
-                "INSERT INTO audit_log "
-                "(actor, action, entity_id, payload_hash, outcome, created_at_utc) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    actor,
-                    action,
-                    entity_id,
-                    payload_hash,
-                    outcome,
-                    created_at_utc,
-                ),
-            )
     except Exception:
-        logger.error(
-            "audit: fallo al insertar en audit_log",
-            exc_info=True,
+        logger.error("audit insert failed", exc_info=True)
+        return None
+
+    try:
+        conn.execute("SAVEPOINT audit_ins")
+        conn.execute(
+            "INSERT INTO audit_log "
+            "(actor, action, entity_id, payload_hash, outcome, created_at_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                actor,
+                action,
+                entity_id,
+                payload_hash,
+                outcome,
+                created_at_utc,
+            ),
         )
+        conn.execute("RELEASE SAVEPOINT audit_ins")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK TO SAVEPOINT audit_ins")
+            conn.execute("RELEASE SAVEPOINT audit_ins")
+        except Exception:
+            pass
+        logger.error("audit insert failed", exc_info=True)
         return None
 
     return None

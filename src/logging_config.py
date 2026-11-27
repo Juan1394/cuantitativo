@@ -8,7 +8,6 @@ línea JSON por registro; el handler de consola emite texto.
 import contextvars
 import json
 import logging
-import os
 import sys
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -64,6 +63,8 @@ class JsonFormatter(logging.Formatter):
             "request_id": getattr(record, "request_id", "no-request"),
             "extra": getattr(record, "_json_extra", {}),
         }
+        if record.exc_info is not None:
+            payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(
             payload,
             ensure_ascii=False,
@@ -79,11 +80,7 @@ def setup_logging(settings: Any) -> None:
     log_dir = Path(settings.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    app_level = (
-        logging.DEBUG
-        if os.environ.get("LOG_LEVEL") == "DEBUG"
-        else logging.INFO
-    )
+    app_level = getattr(logging, settings.log_level)
 
     root = logging.getLogger()
     for handler in root.handlers[:]:

@@ -14,6 +14,7 @@ from src.model_versioning import (
     get_active_model_version,
     get_model_version,
     list_model_versions,
+    promote_model_version,
     register_model_version,
     rollback_active_model,
 )
@@ -240,6 +241,33 @@ def test_rollback_active_model_cambia_active_models_sin_tocar_model_versions(
     assert audit_rows[0]["created_at_utc"] == "2026-01-03T00:00:00+00:00"
 
 
+def test_rollback_hash_audita_el_modelo_activo_leido_en_transaccion(conn):
+    first = _register(conn, hyperparams={"version": 1})
+    second = _register(conn, hyperparams={"version": 2})
+    conn.execute(
+        "INSERT INTO active_models (competition_code, model_version_id) "
+        "VALUES (?, ?)",
+        ("SP1", second),
+    )
+    conn.commit()
+
+    rollback_active_model(conn, "SP1", first)
+
+    payload = {"from": second, "to": first}
+    expected_hash = hashlib.sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    row = conn.execute(
+        "SELECT payload_hash FROM audit_log WHERE action = 'model_rollback'"
+    ).fetchone()
+    assert row[0] == expected_hash
+
+
 def test_get_model_version_con_id_inexistente_devuelve_none(conn):
     assert get_model_version(conn, 999999) is None
 
@@ -307,3 +335,18 @@ def test_migraciones_incrementales_preservan_filas_de_model_versions(tmp_path):
         )
     finally:
         connection.close()
+
+
+def test_promote_model_version_despues_de_rollback_y_registro(conn):
+    first = _register(conn, hyperparams={"version": 1})
+    second = _register(conn, hyperparams={"version": 2})
+    rollback_active_model(conn, "SP1", first)
+    third = _register(conn, hyperparams={"version": 3})
+
+    assert get_active_model_version(conn, "SP1") == first
+    promote_model_version(conn, "SP1", third)
+    assert get_active_model_version(conn, "SP1") == third
+    assert conn.execute("SELECT count(*) FROM audit_log").fetchone()[0] == 2
+
+    with pytest.raises(ValueError, match="no existe"):
+        promote_model_version(conn, "SP1", 999999)

@@ -1,0 +1,34 @@
+# Flask ofrece la capa HTTP de la aplicación.
+flask>=3.0
+# Pydantic valida y tipa la configuración y los modelos.
+pydantic>=2.7
+# pydantic-settings carga configuración tipada desde entorno y .env.
+pydantic-settings>=2.2
+# python-dotenv permite leer archivos .env.
+python-dotenv>=1.0
+# httpx realiza solicitudes HTTP a proveedores externos.
+httpx>=0.27
+# APScheduler ejecuta tareas periódicas de la aplicación.
+apscheduler>=3.10
+# penaltyblog proporciona modelos y utilidades de análisis futbolístico.
+penaltyblog>=1.0
+# SciPy aporta métodos científicos y estadísticos.
+scipy>=1.12
+# NumPy aporta operaciones numéricas y matrices.
+numpy>=1.26
+# pandas gestiona tablas y series de datos.
+pandas>=2.2
+# RapidFuzz compara nombres de equipos de forma eficiente.
+rapidfuzz>=3.6
+# pytest ejecuta la suite automatizada.
+pytest>=8.0
+# pytest-cov mide cobertura de pruebas.
+pytest-cov>=4.1
+# responses simula respuestas HTTP en pruebas.
+responses>=0.25
+# pytest-httpx simula solicitudes httpx en pruebas.
+pytest-httpx>=0.30
+# shin implementa el método de-vig Shin.
+shin>=0.2
+# odds-tools proporciona utilidades de cuotas deportivas.
+odds-tools>=0.1
