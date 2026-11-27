@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.db import get_connection
-from src.migrations import apply_migrations, get_current_version
+from src.migrations import apply_migrations, get_current_version, list_migrations
 from src.radar.normalization import (
     normalize_market,
     normalize_team_name,
@@ -281,7 +281,8 @@ def test_normalize_team_name_persists_fuzzy_match(normalization_db):
 
 
 def test_migration_0008_seed_minimo(normalization_db):
-    assert get_current_version(normalization_db) == 8
+    expected_final = max(v for v, _ in list_migrations(MIGRATIONS_DIR))
+    assert get_current_version(normalization_db) == expected_final
     assert normalization_db.execute(
         "SELECT COUNT(*) FROM team_aliases "
         "WHERE competition_code = 'E0' AND status = 'confirmed'"
