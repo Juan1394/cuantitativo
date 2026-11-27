@@ -1,0 +1,13 @@
+PRAGMA foreign_keys=OFF;
+CREATE TABLE snapshots_new(snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL REFERENCES events(event_id), market TEXT NOT NULL, selection TEXT NOT NULL, odds REAL NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('valid','gap','skipped')), skip_reason TEXT CHECK(skip_reason IN ('daily_cap_reached','too_far_from_kickoff','budget_exhausted','no_odds_available','league_not_in_response','api_error','dry_run_disabled','team_not_confirmed','stale_data')), captured_at_utc TEXT NOT NULL);
+INSERT INTO snapshots_new SELECT * FROM snapshots;
+DROP TABLE snapshots;
+ALTER TABLE snapshots_new RENAME TO snapshots;
+CREATE INDEX idx_snapshots_event_captured ON snapshots(event_id, captured_at_utc);
+CREATE INDEX idx_snapshots_status ON snapshots(status);
+CREATE TABLE data_quality_logs(log_id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL CHECK(entity_type IN ('event','odds','decision','manual_odds','reference_odds')), entity_id TEXT, reason_code TEXT NOT NULL CHECK(reason_code IN ('negative_ev','below_ev_threshold','sanity_check_failed','missing_reference_odds','insufficient_data','invalid_manual_odds','no_sharp_reference','stale_data','kickoff_in_past','invalid_competition_code','invalid_odds_range','invalid_probability_range','overround_out_of_bounds','invalid_match_status','unknown_team_alias')), message TEXT NOT NULL, created_at_utc TEXT NOT NULL);
+CREATE INDEX idx_data_quality_logs_created_at ON data_quality_logs(created_at_utc);
+CREATE INDEX idx_data_quality_logs_reason_code ON data_quality_logs(reason_code);
+CREATE INDEX idx_data_quality_logs_entity ON data_quality_logs(entity_type, entity_id);
+PRAGMA foreign_keys=ON;
+PRAGMA foreign_key_check;

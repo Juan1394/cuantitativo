@@ -32,6 +32,7 @@ EXPECTED_TABLE_NAMES = {
     "active_models",
     "rate_limit_budget",
     "team_aliases",
+    "data_quality_logs",
 }
 
 
@@ -70,8 +71,8 @@ def test_bd_vacia_migra_de_0_a_ultima_version(tmp_path):
         assert applied == expected_names
         assert get_current_version(conn) == versions[-1]
         assert set(_table_names(conn)) == EXPECTED_TABLE_NAMES
-        assert len(_table_names(conn)) == 20
-        assert len(_index_names(conn)) == 10
+        assert len(_table_names(conn)) == 21
+        assert len(_index_names(conn)) == 13
     finally:
         conn.close()
 
@@ -86,8 +87,8 @@ def test_aplicar_dos_veces_no_rompe_ni_duplica(tmp_path):
         assert second == []
         assert get_current_version(conn) == list_migrations(MIGRATIONS_DIR)[-1][0]
         assert set(_table_names(conn)) == EXPECTED_TABLE_NAMES
-        assert len(_table_names(conn)) == 20
-        assert len(_index_names(conn)) == 10
+        assert len(_table_names(conn)) == 21
+        assert len(_index_names(conn)) == 13
         assert len(_index_names(conn)) == len(set(_index_names(conn)))
     finally:
         conn.close()
@@ -808,5 +809,80 @@ def test_0009_preserva_datos_existentes(tmp_path):
         ).fetchall()
         assert [tuple(row) for row in after] == [tuple(row) for row in before]
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        conn.close()
+
+
+def test_0010_data_quality_logs_preserva_snapshots_y_agrega_stale_data(tmp_path):
+    prior_migrations_dir = tmp_path / "migrations_before_data_quality"
+    prior_migrations_dir.mkdir()
+    prior_migrations = list_migrations(MIGRATIONS_DIR)[:-1]
+    for _version, path in prior_migrations:
+        shutil.copy2(path, prior_migrations_dir / path.name)
+
+    conn = get_connection(tmp_path / "data_quality_migration.db")
+    try:
+        apply_migrations(conn, prior_migrations_dir)
+        conn.execute(
+            "INSERT INTO events (event_id, competition_code, home_team, away_team, "
+            "kickoff_utc, match_status, created_at_utc, updated_at_utc) "
+            "VALUES ('event-0010', 'SP1', 'Home', 'Away', '2030-01-01T12:00:00Z', "
+            "'scheduled', '2029-12-01T00:00:00Z', '2029-12-01T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO snapshots (event_id, market, selection, odds, source, status, "
+            "skip_reason, captured_at_utc) VALUES ('event-0010', '1X2', 'HOME', 2.1, "
+            "'pinnacle', 'valid', NULL, '2029-12-31T12:00:00Z')"
+        )
+        conn.commit()
+        before = [tuple(row) for row in conn.execute("SELECT * FROM snapshots")]
+
+        applied = apply_migrations(conn, MIGRATIONS_DIR)
+
+        assert "0010_data_quality_logs.sql" in applied
+        expected_final = max(v for v, _ in list_migrations(MIGRATIONS_DIR))
+        assert get_current_version(conn) == expected_final
+        assert [tuple(row) for row in conn.execute("SELECT * FROM snapshots")] == before
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        conn.execute(
+            "INSERT INTO snapshots (event_id, market, selection, odds, source, status, "
+            "skip_reason, captured_at_utc) VALUES ('event-0010', '1X2', 'ALL', 0, "
+            "'system', 'gap', 'stale_data', '2030-01-01T12:01:00Z')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO snapshots (event_id, market, selection, odds, source, status, "
+                "skip_reason, captured_at_utc) VALUES ('event-0010', '1X2', 'ALL', 0, "
+                "'system', 'gap', 'unknown_reason', '2030-01-01T12:02:00Z')"
+            )
+        conn.execute(
+            "INSERT INTO data_quality_logs (entity_type, entity_id, reason_code, message, "
+            "created_at_utc) VALUES ('odds', 'event-0010', 'stale_data', 'old odds', "
+            "'2030-01-01T12:00:00Z')"
+        )
+        assert conn.execute("SELECT count(*) FROM data_quality_logs").fetchone()[0] == 1
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='data_quality_logs'"
+            )
+        }
+        assert {
+            "idx_data_quality_logs_created_at",
+            "idx_data_quality_logs_reason_code",
+            "idx_data_quality_logs_entity",
+        }.issubset(indexes)
+        assert {
+            "idx_snapshots_event_captured",
+            "idx_snapshots_status",
+        }.issubset(
+            {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='snapshots'"
+                )
+            }
+        )
     finally:
         conn.close()
