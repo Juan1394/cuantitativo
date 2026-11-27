@@ -7,6 +7,7 @@ confirma por sí sola un alias.
 
 from __future__ import annotations
 
+import sqlite3
 import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -193,6 +194,27 @@ def _store_alias(
             verified_at_utc,
         ),
     )
+
+
+def get_alias_status(
+    conn, raw_name: str, competition_code: str, source: str
+) -> str | None:
+    """Devuelve el estado del alias de entrada, no el del nombre canónico.
+
+    Consulta por ``(raw_name, competition_code, source)`` y no tiene efectos
+    laterales. Devuelve ``None`` si no hay alias o la tabla aún no existe.
+    """
+    try:
+        row = conn.execute(
+            "SELECT status FROM team_aliases "
+            "WHERE raw_name = ? AND competition_code = ? AND source = ? LIMIT 1",
+            (raw_name, competition_code, source),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower() and "team_aliases" in str(exc).lower():
+            return None
+        raise
+    return row["status"] if row is not None else None
 
 
 def normalize_team_name(
@@ -412,9 +434,16 @@ def resolve_fixture(
 
 
 def resolve_odds_event_to_local(
-    conn, odds_event: dict, competition_code: str
+    conn,
+    odds_event: dict,
+    competition_code: str,
+    source: str = "the_odds_api",
 ) -> str | None:
-    """Mapea un evento de The Odds API a un event_id local."""
+    """Mapea un evento de cuotas a un event_id local.
+
+    ``source`` documenta la procedencia para el log; la resolución usa el mismo
+    algoritmo de aliases y fixtures independientemente de ese valor.
+    """
     home = odds_event.get("home_team")
     away = odds_event.get("away_team")
     kickoff = odds_event.get("commence_time")
@@ -424,6 +453,11 @@ def resolve_odds_event_to_local(
         or not isinstance(kickoff, str)
     ):
         return None
+    logger.debug(
+        "resolving_odds_event source=%s competition_code=%s",
+        source,
+        competition_code,
+    )
     return resolve_fixture(
         conn,
         home,

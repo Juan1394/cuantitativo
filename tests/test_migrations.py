@@ -564,18 +564,33 @@ def test_0007_recrea_snapshots_con_skip_reasons_extendidos(tmp_path):
             "daily_cap_reached",
             "2029-12-31T12:00:00+00:00",
         )
-        conn.execute(
-            "INSERT INTO snapshots "
-            "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
-            "VALUES ('event-0007', '1X2', 'HOME', 0, 'system', 'skipped', "
-            "'budget_exhausted', '2029-12-31T12:01:00+00:00')"
+        accepted_reasons = (
+            "daily_cap_reached",
+            "too_far_from_kickoff",
+            "budget_exhausted",
+            "no_odds_available",
+            "league_not_in_response",
+            "api_error",
+            "dry_run_disabled",
+            "team_not_confirmed",
         )
+        for index, reason in enumerate(accepted_reasons[1:], start=1):
+            conn.execute(
+                "INSERT INTO snapshots "
+                "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
+                "VALUES ('event-0007', '1X2', 'HOME', 0, 'system', 'skipped', ?, ?)",
+                (reason, f"2029-12-31T12:0{index}:00+00:00"),
+            )
+        assert conn.execute(
+            "SELECT COUNT(*) FROM snapshots WHERE event_id = 'event-0007' "
+            "AND status = 'skipped' AND skip_reason IS NOT NULL"
+        ).fetchone()[0] == len(accepted_reasons)
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
                 "INSERT INTO snapshots "
                 "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
                 "VALUES ('event-0007', '1X2', 'HOME', 0, 'system', 'skipped', "
-                "'foo', '2029-12-31T12:02:00+00:00')"
+                "'foo', '2029-12-31T12:09:00+00:00')"
             )
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         index_names = {
@@ -714,5 +729,83 @@ def test_0008_fuzzy_score_solo_en_no_manual(tmp_path):
                     "VALUES ('Invalid score', ?, 'E0', 'the_odds_api', 'pending', ?, ?)",
                     (f"invalid-{score}", score, timestamp),
                 )
+    finally:
+        conn.close()
+
+
+def test_0009_team_not_confirmed_aceptado(tmp_path):
+    conn = get_connection(tmp_path / "skip_team_not_confirmed.db")
+    try:
+        apply_migrations(conn, MIGRATIONS_DIR)
+        conn.execute(
+            "INSERT INTO events "
+            "(event_id, competition_code, home_team, away_team, kickoff_utc, "
+            "match_status, created_at_utc, updated_at_utc) "
+            "VALUES ('event-0009', 'E0', 'Home', 'Away', '2030-01-01T12:00:00+00:00', "
+            "'scheduled', '2029-12-01T00:00:00+00:00', '2029-12-01T00:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO snapshots "
+            "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
+            "VALUES ('event-0009', '1X2', 'HOME', 0, 'system', 'gap', "
+            "'team_not_confirmed', '2029-12-31T12:00:00+00:00')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO snapshots "
+                "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
+                "VALUES ('event-0009', '1X2', 'HOME', 0, 'system', 'gap', "
+                "'foo', '2029-12-31T12:01:00+00:00')"
+            )
+    finally:
+        conn.close()
+
+
+def test_0009_preserva_datos_existentes(tmp_path):
+    v8_dir = tmp_path / "migrations_v8"
+    v8_dir.mkdir()
+    for version, path in list_migrations(MIGRATIONS_DIR):
+        if version <= 8:
+            shutil.copy2(path, v8_dir / path.name)
+
+    conn = get_connection(tmp_path / "preserve_v8_snapshots.db")
+    try:
+        apply_migrations(conn, v8_dir)
+        conn.execute(
+            "INSERT INTO events "
+            "(event_id, competition_code, home_team, away_team, kickoff_utc, "
+            "match_status, created_at_utc, updated_at_utc) "
+            "VALUES ('event-preserve-0009', 'E0', 'Home', 'Away', "
+            "'2030-01-01T12:00:00+00:00', 'scheduled', "
+            "'2029-12-01T00:00:00+00:00', '2029-12-01T00:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO snapshots "
+            "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
+            "VALUES ('event-preserve-0009', '1X2', 'HOME', 2.1, 'pinnacle', 'valid', "
+            "NULL, '2029-12-31T12:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO snapshots "
+            "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
+            "VALUES ('event-preserve-0009', '1X2', 'DRAW', 3.2, 'pinnacle', 'skipped', "
+            "'budget_exhausted', '2029-12-31T12:01:00+00:00')"
+        )
+        conn.commit()
+        before = conn.execute(
+            "SELECT snapshot_id, event_id, market, selection, odds, source, status, "
+            "skip_reason, captured_at_utc FROM snapshots ORDER BY snapshot_id"
+        ).fetchall()
+
+        applied = apply_migrations(conn, MIGRATIONS_DIR)
+
+        assert "0009_snapshot_skip_team_not_confirmed.sql" in applied
+        assert get_current_version(conn) == 9
+        after = conn.execute(
+            "SELECT snapshot_id, event_id, market, selection, odds, source, status, "
+            "skip_reason, captured_at_utc FROM snapshots ORDER BY snapshot_id"
+        ).fetchall()
+        assert [tuple(row) for row in after] == [tuple(row) for row in before]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()

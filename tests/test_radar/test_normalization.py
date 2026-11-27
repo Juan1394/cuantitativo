@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -6,6 +7,7 @@ import pytest
 from src.db import get_connection
 from src.migrations import apply_migrations, get_current_version, list_migrations
 from src.radar.normalization import (
+    get_alias_status,
     normalize_market,
     normalize_team_name,
     normalize_text,
@@ -301,3 +303,106 @@ def test_normalize_exact_post_strip_no_fuzzy_score(normalization_db):
     ).fetchone()
     assert row["status"] == "confirmed"
     assert row["fuzzy_score"] is None
+
+
+def test_get_alias_status_confirmed(normalization_db):
+    assert get_alias_status(
+        normalization_db, "Man Utd", "E0", "football_data_co_uk"
+    ) == "confirmed"
+
+
+def test_get_alias_status_pending(normalization_db):
+    normalization_db.execute(
+        "INSERT INTO team_aliases "
+        "(canonical_name, raw_name, competition_code, source, status, "
+        "fuzzy_score, created_at_utc) "
+        "VALUES ('Manchester United', 'Pending United', 'E0', 'the_odds_api', "
+        "'pending', 94, ?)",
+        (CREATED_AT,),
+    )
+    assert get_alias_status(
+        normalization_db, "Pending United", "E0", "the_odds_api"
+    ) == "pending"
+
+
+def test_get_alias_status_nonexistent(normalization_db):
+    assert get_alias_status(
+        normalization_db, "Not Inserted", "E0", "the_odds_api"
+    ) is None
+    uninitialized_conn = sqlite3.connect(":memory:")
+    try:
+        assert get_alias_status(
+            uninitialized_conn, "Not Inserted", "E0", "the_odds_api"
+        ) is None
+    finally:
+        uninitialized_conn.close()
+
+
+def test_get_alias_status_wrong_competition(normalization_db):
+    assert get_alias_status(
+        normalization_db, "Man Utd", "SP1", "football_data_co_uk"
+    ) is None
+
+
+def test_get_alias_status_wrong_source(normalization_db):
+    assert get_alias_status(
+        normalization_db, "Manchester United", "E0", "football_data_org"
+    ) is None
+
+
+def test_get_alias_status_prioriza_el_alias_no_el_canonical(normalization_db):
+    result = normalize_team_name(
+        "Manchester Untd", "E0", source="the_odds_api", conn=normalization_db
+    )
+    assert result == ("Manchester United", "fuzzy")
+    assert get_alias_status(
+        normalization_db, "Manchester Untd", "E0", "the_odds_api"
+    ) == "pending"
+
+
+def test_resolve_odds_event_to_local_default_source_the_odds_api(
+    normalization_db, fixture_events
+):
+    event_time = "2026-01-01T15:00:00+00:00"
+    _insert_event(
+        normalization_db,
+        "event-odds-default-source",
+        "Manchester United",
+        "Arsenal",
+        "E0",
+        event_time,
+    )
+    normalization_db.commit()
+    odds_event = {
+        "home_team": "Manchester United",
+        "away_team": "Arsenal",
+        "commence_time": event_time,
+    }
+
+    assert resolve_odds_event_to_local(
+        normalization_db, odds_event, "E0"
+    ) == "event-odds-default-source"
+
+
+def test_resolve_odds_event_to_local_source_explicita(
+    normalization_db, fixture_events
+):
+    event_time = "2026-01-01T15:00:00+00:00"
+    _insert_event(
+        normalization_db,
+        "event-odds-explicit-source",
+        "Manchester United",
+        "Arsenal",
+        "E0",
+        event_time,
+    )
+    normalization_db.commit()
+    odds_event = {
+        "home_team": "Manchester United",
+        "away_team": "Arsenal",
+        "commence_time": event_time,
+    }
+
+    assert resolve_odds_event_to_local(
+        normalization_db, odds_event, "E0", source="api_football"
+    ) == "event-odds-explicit-source"
