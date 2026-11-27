@@ -57,3 +57,27 @@ Items conocidos que no bloquean Fase 1 y se abordan post-Fase 3, cuando haya dat
 - **Cobertura actual:** 88% (L42, L46-47)
 - **Riesgo:** error 429/5xx de API-Football no loggea con contexto.
 - **Fase recomendada:** post-Fase 3
+
+## Normalization · test_abbreviation insuficiente
+
+- **Severidad:** BAJA (cobertura, no funcional)
+- **Motivo:** test_normalize_team_name_abbreviation no demuestra Utd→United. El seed no tiene Newcastle. El test admite (None, None) y un pending.
+- **Fase recomendada:** post-Fase 3 (ampliar seed en migración futura)
+
+## Normalization · test_ambiguous no verifica warning
+
+- **Severidad:** BAJA
+- **Motivo:** test_normalize_team_name_ambiguous_returns_none no usa caplog para verificar "ambiguous_fuzzy_match".
+- **Fase recomendada:** post-Fase 3
+
+## Normalization · contrato de retorno con alias pending no documentado
+
+- **Severidad:** MEDIA (riesgo de integridad en Fase 1.3.2)
+- **Motivo:** normalize_team_name devuelve canonical aunque status='pending'. El recorder podría escribir snapshots con canonical no confirmado.
+- **Fase recomendada:** Fase 1.3.2 (al integrar en snapshot_recorder)
+
+## Normalization · cobertura al 85%
+
+- **Severidad:** BAJA
+- **Cobertura actual:** 85% (20 statements sin cubrir en paths de error)
+- **Fase recomendada:** post-Fase 3
