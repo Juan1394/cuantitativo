@@ -36,3 +36,24 @@ Items conocidos que no bloquean Fase 1 y se abordan post-Fase 3, cuando haya dat
 - **Repro:** desde V4, con 0005 ausente y 0006 presente → aplica 0006 sin aviso.
 - **Test:** `tests/test_F17.py`
 - **Fase recomendada:** post-Fase 3
+
+## Radar · rate_limit.py sin cubrir edge cases de frontera de ventana
+
+- **Severidad:** BAJA (precisión de cuota)
+- **Cobertura actual:** 81% (L43-44, L57, L63, L95-99, L106, L121-124, L138-141, L163-166)
+- **Riesgo:** consume() en el instante exacto de la frontera puede desviar 1 crédito.
+- **Fase recomendada:** post-Fase 3
+
+## Radar · the_odds_api.py sin cubrir parseo de bookmakers complejos
+
+- **Severidad:** BAJA
+- **Cobertura actual:** 85% (L62, L69, L74-78, L95, L102-107, L141, L143-148, L154-159)
+- **Riesgo:** bookmaker sin campo markets rompe el parseo.
+- **Fase recomendada:** post-Fase 3
+
+## Radar · api_football.py sin cubrir paths de error
+
+- **Severidad:** BAJA
+- **Cobertura actual:** 88% (L42, L46-47)
+- **Riesgo:** error 429/5xx de API-Football no loggea con contexto.
+- **Fase recomendada:** post-Fase 3
