@@ -20,23 +20,23 @@ class APIFootballClient:
     BASE_URL = "https://v3.football.api-sports.io"
 
     def __init__(self, settings: object, budget: RateLimitBudgetManager):
+        if not getattr(settings, "api_football_key", None):
+            raise ValueError("api_football_key is required")
         self.settings = settings
-        self.budget = budget
+        self._budget = budget
+
+    def _consume_attempt(self) -> bool:
+        return self._budget.consume("api_football", "day", 1)
 
     def get_fixtures(
         self, league_id: int, season: int, date: str
     ) -> list[dict[str, Any]] | None:
-        """Obtiene fixtures; el coste por llamada se resta del presupuesto diario."""
-        if not self.budget.consume("api_football", "day", cost=1):
-            logger.warning("rate_limit_budget_exhausted provider=api_football")
-            return None
-        key = getattr(self.settings, "api_football_key", None)
-        if not key:
-            raise ValueError("api_football_key no está configurada")
+        """Obtiene fixtures; cada intento consume una petición del presupuesto diario."""
         payload = get_json(
             f"{self.BASE_URL}/fixtures",
-            headers={"x-apisports-key": str(key)},
+            headers={"x-apisports-key": str(self.settings.api_football_key)},
             params={"league": league_id, "season": season, "date": date},
+            before_attempt=self._consume_attempt,
         )
         if isinstance(payload, dict) and payload.get("error") == "rate_limit":
             return None

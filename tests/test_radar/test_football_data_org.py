@@ -45,3 +45,33 @@ def test_429_devuelve_none_y_no_consumo_adicional(httpx_mock, setup_client):
     assert client.get_matches("E0", "2030-01-01", "2030-01-02") is None
     assert len(httpx_mock.get_requests()) == 1
     assert budget.get_remaining("football_data_org", "minute") == 9
+
+
+def test_retry_consumes_budget_per_attempt(httpx_mock, setup_client, monkeypatch):
+    from src.radar import http_client, rate_limit
+
+    client, budget = setup_client
+    monkeypatch.setitem(rate_limit.PROVIDER_LIMITS, ("football_data_org", "minute"), 3)
+    budget.reset("football_data_org", "minute")
+    monkeypatch.setattr(http_client.time, "sleep", lambda _seconds: None)
+    httpx_mock.add_response(status_code=503)
+    httpx_mock.add_response(status_code=503)
+    httpx_mock.add_response(
+        json={"filters": {}, "resultSet": {}, "competition": {"code": "PD"}, "matches": []}
+    )
+
+    assert client.get_matches("SP1", "2030-01-01", "2030-01-02") == []
+    assert len(httpx_mock.get_requests()) == 3
+    assert budget.get_remaining("football_data_org", "minute") == 0
+
+
+def test_missing_key_raises_before_consuming(setup_client):
+    from types import SimpleNamespace
+
+    client, budget = setup_client
+    before = budget.get_remaining("football_data_org", "minute")
+
+    with pytest.raises(ValueError, match="football_data_org_key is required"):
+        FootballDataOrgClient(SimpleNamespace(football_data_org_key=None), budget)
+
+    assert budget.get_remaining("football_data_org", "minute") == before == 10
