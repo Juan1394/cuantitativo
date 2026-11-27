@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from src.audit import audit
+from src.db import transaction
 
 DDL = (
     "CREATE TABLE audit_log("
@@ -24,6 +25,9 @@ DDL = (
 def conn():
     connection = sqlite3.connect(":memory:")
     connection.execute(DDL)
+    connection.execute(
+        "CREATE TABLE bets (bet_id INTEGER PRIMARY KEY, marker TEXT NOT NULL)"
+    )
     connection.commit()
     yield connection
     try:
@@ -93,3 +97,30 @@ def test_audit_fallo_de_insercion_no_lanza(conn, caplog):
         record.levelno == logging.ERROR and "audit" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_audit_respeta_la_transaccion_del_llamador(conn):
+    with transaction(conn):
+        conn.execute("INSERT INTO bets (marker) VALUES (?)", ("before",))
+        assert audit(conn, "usuario", "crear", "bet-1", {"a": 1}, "ok") is None
+        conn.execute("INSERT INTO bets (marker) VALUES (?)", ("after",))
+
+    assert conn.execute("SELECT count(*) FROM bets").fetchone()[0] == 2
+    assert conn.execute("SELECT count(*) FROM audit_log").fetchone()[0] == 1
+
+
+def test_fallo_audit_no_revierte_la_transaccion_ajena(conn):
+    conn.execute("INSERT INTO bets (marker) VALUES (?)", ("committed",))
+    conn.commit()
+    payload = {"not_serializable": object()}
+
+    with pytest.raises(RuntimeError, match="rollback del llamador"):
+        with transaction(conn):
+            conn.execute("INSERT INTO bets (marker) VALUES (?)", ("pending",))
+            result = audit(conn, "usuario", "crear", "bet-2", payload, "ok")
+            assert result is None
+            assert conn.in_transaction is True
+            raise RuntimeError("rollback del llamador")
+
+    assert conn.execute("SELECT marker FROM bets").fetchall() == [("committed",)]
+    assert conn.execute("SELECT count(*) FROM audit_log").fetchone()[0] == 0

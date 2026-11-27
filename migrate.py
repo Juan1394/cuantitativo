@@ -41,12 +41,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        from config import settings
+        if args.db is not None:
+            targets = [args.db]
+        else:
+            from config import settings
 
-        primary = args.db if args.db is not None else settings.db_paths.bets
-        targets = [primary]
-        if args.both and settings.db_paths.audit not in targets:
-            targets.append(settings.db_paths.audit)
+            targets = [settings.db_paths.bets]
+            if args.both and settings.db_paths.audit not in targets:
+                targets.append(settings.db_paths.audit)
 
         for db_path in targets:
             _migrate_one(db_path, MIGRATIONS_DIR)

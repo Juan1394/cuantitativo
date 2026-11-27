@@ -9,9 +9,12 @@ las únicas rutas permitidas son ``settings.db_paths.bets`` y
 import sys
 from pathlib import Path
 from typing import Literal, NamedTuple
+from zoneinfo import available_timezones
 
 from pydantic import ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 class DbPaths(NamedTuple):
@@ -25,7 +28,7 @@ class Settings(BaseSettings):
     """Ajustes validados de la aplicación, cargados desde entorno y .env."""
 
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).with_name(".env"),
+        env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         env_ignore_empty=True,
         extra="forbid",
@@ -52,6 +55,7 @@ class Settings(BaseSettings):
     scheduler_interval_min: int = 10
     retrain_every_n_matches: int = 10
     timezone: str = "Europe/Madrid"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     api_football_key: str
     football_data_org_key: str
     sharp_odds_provider: Literal["pinnodds", "the_odds_api"] = "pinnodds"
@@ -60,15 +64,15 @@ class Settings(BaseSettings):
     sharp_odds_fallback_api_key: str | None = None
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
-    backup_dir: Path = Path("backups")
-    log_dir: Path = Path("logs")
-    models_dir: Path = Path("models")
+    backup_dir: Path = PROJECT_ROOT / "backups"
+    log_dir: Path = PROJECT_ROOT / "logs"
+    models_dir: Path = PROJECT_ROOT / "models"
 
     @property
     def db_paths(self) -> DbPaths:
         """Devuelve las únicas rutas de base de datos permitidas."""
 
-        base_dir = Path("data/dryrun") if self.dry_run else Path("data")
+        base_dir = PROJECT_ROOT / "data" / "dryrun" if self.dry_run else PROJECT_ROOT / "data"
         return DbPaths(bets=base_dir / "bets.db", audit=base_dir / "audit.db")
 
     @staticmethod
@@ -112,6 +116,61 @@ class Settings(BaseSettings):
             self.technical_min_bets < self.interpretable_min_bets,
             "technical_min_bets",
             "debe ser menor que interpretable_min_bets",
+        )
+        self._require(
+            self.snapshot_interval_near_h > 0,
+            "snapshot_interval_near_h",
+            "debe ser mayor que 0",
+        )
+        self._require(
+            self.snapshot_interval_far_h > 0,
+            "snapshot_interval_far_h",
+            "debe ser mayor que 0",
+        )
+        self._require(
+            self.snapshot_near_window_h > 0,
+            "snapshot_near_window_h",
+            "debe ser mayor que 0",
+        )
+        self._require(
+            self.snapshot_interval_near_h < self.snapshot_near_window_h,
+            "snapshot_interval_near_h",
+            "debe ser menor que snapshot_near_window_h",
+        )
+        self._require(
+            0 < self.snapshot_daily_cap_pct <= 1,
+            "snapshot_daily_cap_pct",
+            "debe cumplir 0 < valor <= 1",
+        )
+        self._require(
+            self.snapshot_min_valid_per_event >= 1,
+            "snapshot_min_valid_per_event",
+            "debe ser mayor o igual que 1",
+        )
+        self._require(
+            self.closure_grace_period_min > 0,
+            "closure_grace_period_min",
+            "debe ser mayor que 0",
+        )
+        self._require(
+            self.scheduler_interval_min > 0,
+            "scheduler_interval_min",
+            "debe ser mayor que 0",
+        )
+        self._require(
+            self.retrain_every_n_matches >= 1,
+            "retrain_every_n_matches",
+            "debe ser mayor o igual que 1",
+        )
+        self._require(
+            self.manual_odds_staleness_min > 0,
+            "manual_odds_staleness_min",
+            "debe ser mayor que 0",
+        )
+        self._require(
+            self.timezone in available_timezones(),
+            "timezone",
+            "debe ser una zona horaria IANA válida",
         )
 
         if self.sharp_odds_fallback_provider is None:

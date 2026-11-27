@@ -1,3 +1,4 @@
+import inspect
 import sqlite3
 from pathlib import Path
 
@@ -138,5 +139,75 @@ def test_get_connection_activa_pragmas(tmp_path):
         )
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    finally:
+        conn.close()
+
+
+def test_checks_de_bets_rechazan_valores_invalidos(tmp_path):
+    conn = get_connection(tmp_path / "checks.db")
+    try:
+        apply_migrations(conn, MIGRATIONS_DIR)
+        conn.execute(
+            "INSERT INTO events "
+            "(event_id, competition_code, home_team, away_team, kickoff_utc, "
+            "match_status, created_at_utc, updated_at_utc) "
+            "VALUES ('event-1', 'SP1', 'Home', 'Away', '2026-01-01T00:00:00Z', "
+            "'scheduled', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')"
+        )
+        invalid_values = [
+            ("manual_odds", 0.5),
+            ("stake", -10),
+            ("model_probability", 7.5),
+        ]
+        for index, (field, value) in enumerate(invalid_values):
+            values = {
+                "manual_odds": 2.0,
+                "stake": 10.0,
+                "model_probability": 0.5,
+            }
+            values[field] = value
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO bets "
+                    "(event_id, market, selection, manual_odds, stake, ev, "
+                    "model_probability, status, idempotency_key, created_at_utc) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "event-1",
+                        "1x2",
+                        "home",
+                        values["manual_odds"],
+                        values["stake"],
+                        0.1,
+                        values["model_probability"],
+                        "open",
+                        f"invalid-{index}",
+                        "2025-01-01T00:00:00Z",
+                    ),
+                )
+    finally:
+        conn.close()
+
+
+def test_begin_immediate_precede_lectura_user_version():
+    source = inspect.getsource(apply_migrations)
+    assert source.index('conn.execute("BEGIN IMMEDIATE")') < source.index(
+        "get_current_version(conn)"
+    )
+
+
+def test_migracion_acepta_comentario_inline(tmp_path):
+    migrations_dir = tmp_path / "migrations_comentarios"
+    migrations_dir.mkdir()
+    (migrations_dir / "0001_comments.sql").write_text(
+        "CREATE TABLE comment_test(value INTEGER); -- comentario inline\n"
+        "INSERT INTO comment_test(value) VALUES (7); -- comentario final\n",
+        encoding="utf-8",
+    )
+
+    conn = get_connection(tmp_path / "comments.db")
+    try:
+        assert apply_migrations(conn, migrations_dir) == ["0001_comments.sql"]
+        assert conn.execute("SELECT value FROM comment_test").fetchone()[0] == 7
     finally:
         conn.close()

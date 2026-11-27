@@ -194,14 +194,6 @@ def rollback_active_model(
 ) -> None:
     """Cambia la referencia activa y audita la acción sin tocar ``model_versions``."""
 
-    current_model_version_id = get_active_model_version(
-        conn, competition_code
-    )
-    if current_model_version_id is None:
-        raise ValueError(
-            f"no hay version de modelo para la competicion {competition_code}"
-        )
-
     target_exists = conn.execute(
         "SELECT 1 FROM model_versions "
         "WHERE model_version_id = ? AND competition_code = ?",
@@ -212,14 +204,36 @@ def rollback_active_model(
             "la version objetivo no existe para la competicion indicada"
         )
 
-    payload = {
-        "from": current_model_version_id,
-        "to": target_model_version_id,
-    }
-    payload_hash = _payload_hash(payload)
-    created_at_utc = datetime.now(timezone.utc).isoformat()
-
     with _atomic(conn):
+        current = conn.execute(
+            "SELECT model_version_id FROM active_models "
+            "WHERE competition_code = ?",
+            (competition_code,),
+        ).fetchone()
+        current_model_version_id = (
+            int(current[0])
+            if current is not None
+            else _recent_model_version_id(conn, competition_code)
+        )
+        if current_model_version_id is None:
+            raise ValueError(
+                f"no hay version de modelo para la competicion {competition_code}"
+            )
+
+        payload = {
+            "from": current_model_version_id,
+            "to": target_model_version_id,
+        }
+        payload_hash = _payload_hash(payload)
+        created_at_utc = datetime.now(timezone.utc).isoformat()
+
+        conn.execute(
+            "INSERT INTO active_models "
+            "(competition_code, model_version_id) VALUES (?, ?) "
+            "ON CONFLICT(competition_code) DO UPDATE SET "
+            "model_version_id = excluded.model_version_id",
+            (competition_code, target_model_version_id),
+        )
         conn.execute(
             "INSERT INTO audit_log "
             "(actor, action, entity_id, payload_hash, outcome, created_at_utc) "
@@ -233,10 +247,60 @@ def rollback_active_model(
                 created_at_utc,
             ),
         )
+
+
+def promote_model_version(
+    conn: sqlite3.Connection,
+    competition_code: str,
+    model_version_id: int,
+) -> None:
+    """Promueve una versión existente y registra la operación en ``audit_log``."""
+
+    target_exists = conn.execute(
+        "SELECT 1 FROM model_versions "
+        "WHERE model_version_id = ? AND competition_code = ?",
+        (model_version_id, competition_code),
+    ).fetchone()
+    if target_exists is None:
+        raise ValueError(
+            "la version objetivo no existe para la competicion indicada"
+        )
+
+    with _atomic(conn):
+        current = conn.execute(
+            "SELECT model_version_id FROM active_models "
+            "WHERE competition_code = ?",
+            (competition_code,),
+        ).fetchone()
+        current_model_version_id = (
+            int(current[0])
+            if current is not None
+            else _recent_model_version_id(conn, competition_code)
+        )
+        payload = {
+            "from": current_model_version_id,
+            "to": model_version_id,
+        }
+        payload_hash = _payload_hash(payload)
+        created_at_utc = datetime.now(timezone.utc).isoformat()
+
         conn.execute(
             "INSERT INTO active_models "
             "(competition_code, model_version_id) VALUES (?, ?) "
             "ON CONFLICT(competition_code) DO UPDATE SET "
             "model_version_id = excluded.model_version_id",
-            (competition_code, target_model_version_id),
+            (competition_code, model_version_id),
+        )
+        conn.execute(
+            "INSERT INTO audit_log "
+            "(actor, action, entity_id, payload_hash, outcome, created_at_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                AUDIT_ACTOR,
+                "model_promote",
+                competition_code,
+                payload_hash,
+                AUDIT_OUTCOME,
+                created_at_utc,
+            ),
         )

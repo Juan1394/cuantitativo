@@ -5,7 +5,6 @@ import sqlite3
 from pathlib import Path
 from typing import Iterator
 
-from src.db import transaction
 from src.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -48,6 +47,11 @@ def _iter_sql_statements(path: Path) -> Iterator[str]:
 
     buffer = ""
     for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+        if line.lstrip().startswith("--"):
+            continue
+        line = line.split("--", 1)[0]
+        if not line.strip():
+            continue
         buffer += line
         if sqlite3.complete_statement(buffer):
             statement = buffer.strip()
@@ -71,23 +75,34 @@ def apply_migrations(
 ) -> list[str]:
     """Aplica las migraciones pendientes y devuelve sus nombres de fichero."""
 
-    current_version = get_current_version(conn)
+    conn.execute("BEGIN IMMEDIATE")
     applied: list[str] = []
+    migration_names: list[str] = []
 
-    for version, path in list_migrations(migrations_dir):
-        if version <= current_version:
-            continue
+    try:
+        current_version = get_current_version(conn)
+        for version, path in list_migrations(migrations_dir):
+            if version <= current_version:
+                continue
 
-        try:
-            with transaction(conn):
+            try:
                 _execute_sql_file(conn, path)
                 conn.execute(f"PRAGMA user_version = {version}")
-        except Exception as exc:
-            raise RuntimeError(
-                f"error al aplicar la migracion {path.name}"
-            ) from exc
+            except Exception as exc:
+                raise RuntimeError(
+                    f"error al aplicar la migracion {path.name}"
+                ) from exc
 
-        logger.info("migracion aplicada: %s", path.name)
-        applied.append(path.name)
+            migration_names.append(path.name)
+            applied.append(path.name)
+
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+    for name in migration_names:
+        logger.info("migracion aplicada: %s", name)
 
     return applied

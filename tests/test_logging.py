@@ -29,6 +29,19 @@ def restore_logging():
     lc._REQUEST_ID.set("no-request")
 
 
+def _logging_settings(tmp_path, log_level="INFO"):
+    return SimpleNamespace(log_dir=tmp_path / "logs", log_level=log_level)
+
+
+def _settings_class(monkeypatch):
+    monkeypatch.setenv("API_FOOTBALL_KEY", "test-football")
+    monkeypatch.setenv("FOOTBALL_DATA_ORG_KEY", "test-data-org")
+    monkeypatch.setenv("SHARP_ODDS_API_KEY", "test-sharp")
+    from config import Settings
+
+    return Settings
+
+
 def _leer_request_id() -> str:
     return lc.get_request_id()
 
@@ -46,7 +59,7 @@ def _ancestors(logger: logging.Logger):
 
 
 def test_log_info_llega_a_fichero_json(tmp_path, restore_logging):
-    settings = SimpleNamespace(log_dir=tmp_path / "logs")
+    settings = _logging_settings(tmp_path)
     lc.setup_logging(settings)
 
     logger = lc.get_logger("test.logging")
@@ -77,7 +90,7 @@ def test_log_info_llega_a_fichero_json(tmp_path, restore_logging):
 
 
 def test_extra_vacio_cuando_no_hay_campos_personalizados(tmp_path, restore_logging):
-    settings = SimpleNamespace(log_dir=tmp_path / "logs")
+    settings = _logging_settings(tmp_path)
     lc.setup_logging(settings)
 
     lc.get_logger("test.sin_extra").info("sin extras")
@@ -107,7 +120,7 @@ def test_request_id_viaja_a_hilo_con_copy_context(restore_logging):
 
 
 def test_request_id_aparece_en_json(tmp_path, restore_logging):
-    settings = SimpleNamespace(log_dir=tmp_path / "logs")
+    settings = _logging_settings(tmp_path)
     lc.setup_logging(settings)
     lc.set_request_id("req-json")
 
@@ -119,7 +132,7 @@ def test_request_id_aparece_en_json(tmp_path, restore_logging):
 
 def test_log_level_debug(monkeypatch, tmp_path, restore_logging):
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
-    lc.setup_logging(SimpleNamespace(log_dir=tmp_path / "logs"))
+    lc.setup_logging(_logging_settings(tmp_path, "DEBUG"))
 
     root = logging.getLogger()
     assert root.level == logging.DEBUG
@@ -132,7 +145,7 @@ def test_log_level_debug(monkeypatch, tmp_path, restore_logging):
 
 def test_log_level_info_por_defecto(monkeypatch, tmp_path, restore_logging):
     monkeypatch.delenv("LOG_LEVEL", raising=False)
-    lc.setup_logging(SimpleNamespace(log_dir=tmp_path / "logs"))
+    lc.setup_logging(_logging_settings(tmp_path))
 
     root = logging.getLogger()
     assert root.level == logging.INFO
@@ -148,7 +161,7 @@ def test_log_level_info_por_defecto(monkeypatch, tmp_path, restore_logging):
 
 
 def test_setup_logging_no_duplica_handlers(tmp_path, restore_logging):
-    settings = SimpleNamespace(log_dir=tmp_path / "logs")
+    settings = _logging_settings(tmp_path)
     lc.setup_logging(settings)
     lc.setup_logging(settings)
 
@@ -164,7 +177,7 @@ def test_setup_logging_no_duplica_handlers(tmp_path, restore_logging):
 
 
 def test_rotating_file_handler_parametros(tmp_path, restore_logging):
-    settings = SimpleNamespace(log_dir=tmp_path / "logs")
+    settings = _logging_settings(tmp_path)
     lc.setup_logging(settings)
 
     handler = next(
@@ -177,7 +190,7 @@ def test_rotating_file_handler_parametros(tmp_path, restore_logging):
 
 
 def test_stream_handler_formato_texto(tmp_path, restore_logging):
-    lc.setup_logging(SimpleNamespace(log_dir=tmp_path / "logs"))
+    lc.setup_logging(_logging_settings(tmp_path))
 
     handler = next(
         h
@@ -195,3 +208,62 @@ def test_get_logger_es_descendiente_del_raiz():
     assert logger is not logging.getLogger()
     assert logger.name == "app.modulo"
     assert logging.getLogger() in list(_ancestors(logger))
+
+
+def test_log_level_se_carga_desde_env_y_configura_logging(
+    monkeypatch, tmp_path, restore_logging
+):
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    Settings = _settings_class(monkeypatch)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "API_FOOTBALL_KEY=test-football\n"
+        "FOOTBALL_DATA_ORG_KEY=test-data-org\n"
+        "SHARP_ODDS_API_KEY=test-sharp\n"
+        f"LOG_DIR={tmp_path / 'logs'}\n"
+        "LOG_LEVEL=DEBUG\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+    assert settings.log_level == "DEBUG"
+    lc.setup_logging(settings)
+    assert logging.getLogger().level == logging.DEBUG
+
+
+def test_log_level_invalido_lanza_validation_error(monkeypatch, tmp_path):
+    from pydantic import ValidationError
+
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    Settings = _settings_class(monkeypatch)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "API_FOOTBALL_KEY=test-football\n"
+        "FOOTBALL_DATA_ORG_KEY=test-data-org\n"
+        "SHARP_ODDS_API_KEY=test-sharp\n"
+        "LOG_LEVEL=INVALID\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=env_file)
+
+
+def test_json_formatter_incluye_traceback_solo_con_excepcion(
+    tmp_path, restore_logging
+):
+    settings = _logging_settings(tmp_path)
+    lc.setup_logging(settings)
+    logger = lc.get_logger("test.exception")
+
+    try:
+        raise ValueError("causa original")
+    except ValueError:
+        logger.error("fallo", exc_info=True)
+    logger.info("sin excepción")
+
+    lines = (settings.log_dir / "app.log").read_text(encoding="utf-8").splitlines()
+    with_exception, without_exception = [json.loads(line) for line in lines]
+    assert "exception" in with_exception
+    assert "causa original" in with_exception["exception"]
+    assert "exception" not in without_exception
