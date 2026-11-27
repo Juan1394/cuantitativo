@@ -1,4 +1,5 @@
 import inspect
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -209,5 +210,131 @@ def test_migracion_acepta_comentario_inline(tmp_path):
     try:
         assert apply_migrations(conn, migrations_dir) == ["0001_comments.sql"]
         assert conn.execute("SELECT value FROM comment_test").fetchone()[0] == 7
+    finally:
+        conn.close()
+
+
+def _create_v4_migrations_dir(parent: Path) -> Path:
+    migrations_dir = parent / "migrations_v4"
+    migrations_dir.mkdir()
+    for version in range(1, 5):
+        source = next(MIGRATIONS_DIR.glob(f"{version:04d}_*.sql"))
+        shutil.copy2(source, migrations_dir / source.name)
+    return migrations_dir
+
+
+def _insert_valid_bet(conn: sqlite3.Connection, event_id: str, key: str) -> None:
+    conn.execute(
+        "INSERT INTO events "
+        "(event_id, competition_code, home_team, away_team, kickoff_utc, "
+        "match_status, created_at_utc, updated_at_utc) "
+        "VALUES (?, 'SP1', 'Home', 'Away', '2026-01-01T00:00:00Z', "
+        "'scheduled', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+        (event_id,),
+    )
+    conn.execute(
+        "INSERT INTO bets "
+        "(event_id, market, selection, manual_odds, stake, ev, "
+        "model_probability, status, idempotency_key, created_at_utc) "
+        "VALUES (?, '1x2', 'home', 2.0, 10.0, 0.1, 0.5, 'open', ?, ?)",
+        (event_id, key, "2025-01-01T00:00:00Z"),
+    )
+
+
+def test_0005_upgrade_desde_v4_rechaza_datos_invalidos(tmp_path):
+    v4_dir = _create_v4_migrations_dir(tmp_path)
+    conn = get_connection(tmp_path / "v4.db")
+    try:
+        apply_migrations(conn, v4_dir)
+        assert get_current_version(conn) == 4
+        _insert_valid_bet(conn, "event-v4", "valid-v4")
+        conn.commit()
+
+        migration_5_dir = tmp_path / "migration_5"
+        migration_5_dir.mkdir()
+        migration_5 = next(MIGRATIONS_DIR.glob("0005_*.sql"))
+        shutil.copy2(migration_5, migration_5_dir / migration_5.name)
+        assert apply_migrations(conn, migration_5_dir) == [migration_5.name]
+        assert get_current_version(conn) == 5
+        assert conn.execute("SELECT count(*) FROM bets").fetchone()[0] == 1
+
+        invalid_values = [
+            ("manual_odds", 0.5),
+            ("stake", -5),
+            ("model_probability", 1.4),
+            ("manual_odds", "texto"),
+        ]
+        for index, (field, value) in enumerate(invalid_values):
+            values = {
+                "manual_odds": 2.0,
+                "stake": 10.0,
+                "model_probability": 0.5,
+            }
+            values[field] = value
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO bets "
+                    "(event_id, market, selection, manual_odds, stake, ev, "
+                    "model_probability, status, idempotency_key, created_at_utc) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "event-v4",
+                        "1x2",
+                        "home",
+                        values["manual_odds"],
+                        values["stake"],
+                        0.1,
+                        values["model_probability"],
+                        "open",
+                        f"invalid-v4-{index}",
+                        "2025-01-01T00:00:00Z",
+                    ),
+                )
+    finally:
+        conn.close()
+
+
+def test_0005_nueva_igual_a_migrada(tmp_path):
+    fresh = get_connection(tmp_path / "fresh.db")
+    migrated = get_connection(tmp_path / "migrated.db")
+    try:
+        apply_migrations(fresh, MIGRATIONS_DIR)
+        v4_dir = _create_v4_migrations_dir(tmp_path)
+        apply_migrations(migrated, v4_dir)
+        apply_migrations(migrated, MIGRATIONS_DIR)
+
+        fresh_ddl = fresh.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='bets'"
+        ).fetchone()[0]
+        migrated_ddl = migrated.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='bets'"
+        ).fetchone()[0]
+        assert fresh_ddl == migrated_ddl
+
+        fresh_columns = [
+            tuple(row) for row in fresh.execute("PRAGMA table_info(bets)")
+        ]
+        migrated_columns = [
+            tuple(row) for row in migrated.execute("PRAGMA table_info(bets)")
+        ]
+        assert fresh_columns == migrated_columns
+    finally:
+        fresh.close()
+        migrated.close()
+
+
+def test_comentario_dentro_de_string_no_corta(tmp_path):
+    migrations_dir = tmp_path / "migrations_string_comment"
+    migrations_dir.mkdir()
+    (migrations_dir / "0001_team.sql").write_text(
+        "CREATE TABLE teams(name TEXT);\n"
+        "INSERT INTO teams(name) VALUES ('Team -- A');\n",
+        encoding="utf-8",
+    )
+
+    conn = get_connection(tmp_path / "team.db")
+    try:
+        apply_migrations(conn, migrations_dir)
+        assert conn.execute("SELECT name FROM teams").fetchone()[0] == "Team -- A"
     finally:
         conn.close()

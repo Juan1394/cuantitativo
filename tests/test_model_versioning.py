@@ -34,7 +34,8 @@ MODEL_VERSION_FIELDS = {
 
 
 @pytest.fixture
-def conn(tmp_path):
+def conn(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     connection = get_connection(tmp_path / "model_versioning.db")
     apply_migrations(connection, MIGRATIONS_DIR)
     yield connection
@@ -68,6 +69,9 @@ def _register(
     log_likelihood=None,
     model_path=None,
 ):
+    artifact_path = Path("models/sp1.pkl") if model_path is None else model_path
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.touch(exist_ok=True)
     return register_model_version(
         connection,
         competition_code,
@@ -75,7 +79,7 @@ def _register(
         matches_count,
         {"xi": 0.003, "alpha": 1} if hyperparams is None else hyperparams,
         log_likelihood,
-        Path("models/sp1.pkl") if model_path is None else model_path,
+        artifact_path,
     )
 
 
@@ -324,8 +328,9 @@ def test_migraciones_incrementales_preservan_filas_de_model_versions(tmp_path):
         assert applied == [
             "0003_model_artifacts.sql",
             "0004_active_models.sql",
+            "0005_bets_constraints.sql",
         ]
-        assert get_current_version(connection) == 4
+        assert get_current_version(connection) == 5
         assert _query_dicts(
             connection, "SELECT * FROM model_versions ORDER BY model_version_id"
         ) == before
@@ -350,3 +355,23 @@ def test_promote_model_version_despues_de_rollback_y_registro(conn):
 
     with pytest.raises(ValueError, match="no existe"):
         promote_model_version(conn, "SP1", 999999)
+
+
+def test_promote_activa_version_sin_artefacto_falla(conn):
+    previous_path = Path("models/sp1_v1.pkl")
+    missing_path = Path("models/sp1_v2.pkl")
+    previous = _register(conn, model_path=previous_path)
+    missing = _register(conn, model_path=missing_path)
+
+    promote_model_version(conn, "SP1", previous)
+    missing_path.unlink()
+
+    with pytest.raises(FileNotFoundError, match="sp1_v2.pkl"):
+        promote_model_version(conn, "SP1", missing)
+
+    active = conn.execute(
+        "SELECT model_version_id FROM active_models WHERE competition_code = ?",
+        ("SP1",),
+    ).fetchone()
+    assert active[0] == previous
+    assert conn.execute("SELECT count(*) FROM audit_log").fetchone()[0] == 1

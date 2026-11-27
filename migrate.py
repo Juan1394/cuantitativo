@@ -39,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Aplica tambien las migraciones a settings.db_paths.audit.",
     )
     args = parser.parse_args(argv)
+    if args.db is not None and args.both:
+        parser.error("--both no es compatible con --db")
 
     try:
         if args.db is not None:

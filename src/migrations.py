@@ -42,14 +42,60 @@ def list_migrations(migrations_dir: Path) -> list[tuple[int, Path]]:
     return sorted(migrations, key=lambda item: item[0])
 
 
+def _strip_line_comments(sql: str) -> str:
+    """Elimina comentarios -- fuera de comillas; no soporta comentarios /* */."""
+
+    output: list[str] = []
+    in_single_quote = False
+    in_double_quote = False
+    in_line_comment = False
+    index = 0
+
+    while index < len(sql):
+        character = sql[index]
+        next_character = sql[index + 1] if index + 1 < len(sql) else ""
+
+        if in_line_comment:
+            if character == "\n":
+                output.append(character)
+                in_line_comment = False
+            index += 1
+            continue
+
+        if character == "'" and not in_double_quote:
+            if in_single_quote and next_character == "'":
+                output.extend((character, next_character))
+                index += 2
+                continue
+            in_single_quote = not in_single_quote
+        elif character == '"' and not in_single_quote:
+            if in_double_quote and next_character == '"':
+                output.extend((character, next_character))
+                index += 2
+                continue
+            in_double_quote = not in_double_quote
+        elif (
+            character == "-"
+            and next_character == "-"
+            and not in_single_quote
+            and not in_double_quote
+        ):
+            in_line_comment = True
+            index += 2
+            continue
+
+        output.append(character)
+        index += 1
+
+    return "".join(output)
+
+
 def _iter_sql_statements(path: Path) -> Iterator[str]:
-    """Lee un fichero SQL y produce sentencias completas para ejecucion individual."""
+    """Lee sentencias SQL; comentarios /* */ no se soportan todavía."""
 
     buffer = ""
-    for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
-        if line.lstrip().startswith("--"):
-            continue
-        line = line.split("--", 1)[0]
+    sql = _strip_line_comments(path.read_text(encoding="utf-8"))
+    for line in sql.splitlines(keepends=True):
         if not line.strip():
             continue
         buffer += line

@@ -84,6 +84,23 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def _ensure_artifact_exists(
+    conn: sqlite3.Connection, model_version_id: int
+) -> None:
+    """Rechaza activar versiones sin un artefacto presente en disco."""
+
+    row = conn.execute(
+        "SELECT model_path FROM model_artifacts WHERE model_version_id = ?",
+        (model_version_id,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        raise ValueError(f"model_version {model_version_id} has no artifact")
+
+    model_path = Path(row[0])
+    if not model_path.exists():
+        raise FileNotFoundError(str(model_path))
+
+
 def _recent_model_version_id(
     conn: sqlite3.Connection, competition_code: str
 ) -> int | None:
@@ -205,6 +222,7 @@ def rollback_active_model(
         )
 
     with _atomic(conn):
+        _ensure_artifact_exists(conn, target_model_version_id)
         current = conn.execute(
             "SELECT model_version_id FROM active_models "
             "WHERE competition_code = ?",
@@ -267,6 +285,7 @@ def promote_model_version(
         )
 
     with _atomic(conn):
+        _ensure_artifact_exists(conn, model_version_id)
         current = conn.execute(
             "SELECT model_version_id FROM active_models "
             "WHERE competition_code = ?",
