@@ -5,6 +5,13 @@ from src.radar.football_data_org import FootballDataOrgClient
 from src.radar.rate_limit import RateLimitBudgetManager
 from src.radar.snapshot_recorder import SnapshotPlan, SnapshotRecorder, SnapshotResult
 from src.radar.the_odds_api import TheOddsAPIClient
+from src.radar.normalization import (
+    normalize_market,
+    normalize_team_name,
+    normalize_text,
+    resolve_fixture,
+    resolve_odds_event_to_local,
+)
 
 __all__ = [
     "RateLimitBudgetManager",
@@ -14,4 +21,9 @@ __all__ = [
     "SnapshotRecorder",
     "SnapshotPlan",
     "SnapshotResult",
+    "normalize_team_name",
+    "normalize_market",
+    "normalize_text",
+    "resolve_fixture",
+    "resolve_odds_event_to_local",
 ]
