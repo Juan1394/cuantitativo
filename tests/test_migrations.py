@@ -418,22 +418,80 @@ def test_0005_con_filas_hijas(tmp_path):
         conn.close()
 
 
-def test_0005_conserva_secuencia_ids(tmp_path):
+def test_0005_preserva_secuencia_al_borrar_maximo(tmp_path):
     v4_dir = _create_v4_migrations_dir(tmp_path)
-    conn = get_connection(tmp_path / "v4_sequence.db")
+    conn = get_connection(tmp_path / "v4_sequence_max.db")
     try:
         apply_migrations(conn, v4_dir)
         for index in range(1, 4):
             _insert_valid_bet(conn, f"event-seq-{index}", f"bet-seq-{index}")
-        conn.execute("DELETE FROM bets WHERE bet_id = 2")
+        conn.execute("DELETE FROM bets WHERE bet_id = 3")
         conn.commit()
 
         apply_migrations(conn, MIGRATIONS_DIR)
         _insert_valid_bet(conn, "event-seq-4", "bet-seq-4")
-        new_bet_id = conn.execute(
+        _insert_valid_bet(conn, "event-seq-5", "bet-seq-5")
+        assert conn.execute(
             "SELECT bet_id FROM bets WHERE idempotency_key = 'bet-seq-4'"
-        ).fetchone()[0]
-        assert new_bet_id == 4
+        ).fetchone()[0] == 4
+        assert conn.execute(
+            "SELECT bet_id FROM bets WHERE idempotency_key = 'bet-seq-5'"
+        ).fetchone()[0] == 5
+    finally:
+        conn.close()
+
+
+def test_0005_preserva_secuencia_al_borrar_todos(tmp_path):
+    v4_dir = _create_v4_migrations_dir(tmp_path)
+    conn = get_connection(tmp_path / "v4_sequence_all_deleted.db")
+    try:
+        apply_migrations(conn, v4_dir)
+        for index in range(1, 4):
+            _insert_valid_bet(conn, f"event-all-{index}", f"bet-all-{index}")
+        conn.execute("DELETE FROM bets")
+        conn.commit()
+
+        apply_migrations(conn, MIGRATIONS_DIR)
+        _insert_valid_bet(conn, "event-all-4", "bet-all-4")
+        assert conn.execute(
+            "SELECT bet_id FROM bets WHERE idempotency_key = 'bet-all-4'"
+        ).fetchone()[0] == 4
+    finally:
+        conn.close()
+
+
+def test_0005_tabla_vacia_sin_secuencia_previa(tmp_path):
+    v4_dir = _create_v4_migrations_dir(tmp_path)
+    conn = get_connection(tmp_path / "v4_sequence_empty.db")
+    try:
+        apply_migrations(conn, v4_dir)
+        assert conn.execute(
+            "SELECT count(*) FROM sqlite_sequence WHERE name = 'bets'"
+        ).fetchone()[0] == 0
+
+        apply_migrations(conn, MIGRATIONS_DIR)
+        _insert_valid_bet(conn, "event-empty-1", "bet-empty-1")
+        assert conn.execute(
+            "SELECT bet_id FROM bets WHERE idempotency_key = 'bet-empty-1'"
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_0005_conserva_secuencia_sin_borrados(tmp_path):
+    v4_dir = _create_v4_migrations_dir(tmp_path)
+    conn = get_connection(tmp_path / "v4_sequence_no_deletes.db")
+    try:
+        apply_migrations(conn, v4_dir)
+        for index in range(1, 4):
+            _insert_valid_bet(conn, f"event-intact-{index}", f"bet-intact-{index}")
+        conn.commit()
+
+        apply_migrations(conn, MIGRATIONS_DIR)
+        _insert_valid_bet(conn, "event-intact-4", "bet-intact-4")
+        assert conn.execute(
+            "SELECT bet_id FROM bets WHERE idempotency_key = 'bet-intact-4'"
+        ).fetchone()[0] == 4
     finally:
         conn.close()
 
