@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,11 @@ def budget(tmp_path):
     conn.close()
     settings = SimpleNamespace(db_paths=SimpleNamespace(bets=db_path))
     return RateLimitBudgetManager(settings)
+
+
+@pytest.fixture
+def manager(budget):
+    return budget
 
 
 def test_consume_respeta_limite_y_devuelve_false_al_agotarse(budget):
@@ -117,36 +123,80 @@ def test_reset_diario_cruzando_anio(budget, monkeypatch):
     assert budget.get_remaining("api_football", "day") == 100
 
 
-def test_reset_mensual_febrero_bisiesto(budget, monkeypatch):
-    from datetime import datetime, timezone
+def test_reset_mensual_febrero_bisiesto(manager, monkeypatch):
+    from src.radar import rate_limit
 
-    conn = get_connection(budget.db_path)
+    monkeypatch.setitem(rate_limit.PROVIDER_LIMITS, ("test", "month"), 5)
+    conn = sqlite3.connect(manager.db_path)
     conn.execute(
-        "INSERT INTO rate_limit_budget VALUES (?, ?, ?, ?, ?)",
-        ("the_odds_api", "month", 7, 500, "2024-02-28T23:59:59+00:00"),
+        "INSERT INTO rate_limit_budget (provider, window, used, limit_value, reset_at_utc) "
+        "VALUES ('test', 'month', 4, 5, '2024-03-01T00:00:00+00:00')"
     )
     conn.commit()
     conn.close()
-    monkeypatch.setattr(
-        budget,
-        "_now_utc",
-        lambda: datetime(2024, 2, 28, 23, 59, 58, tzinfo=timezone.utc),
-    )
-    assert budget.consume("the_odds_api", "month")
 
     monkeypatch.setattr(
-        budget,
+        manager,
         "_now_utc",
-        lambda: datetime(2024, 2, 29, 0, 0, 0, tzinfo=timezone.utc),
+        lambda: datetime(2024, 2, 29, 23, 59, 59, tzinfo=timezone.utc),
     )
-    assert budget.get_remaining("the_odds_api", "month") == 492
+    assert manager.consume("test", "month") is True
+    assert manager.get_remaining("test", "month") == 0
 
     monkeypatch.setattr(
-        budget,
+        manager,
         "_now_utc",
         lambda: datetime(2024, 3, 1, 0, 0, 0, tzinfo=timezone.utc),
     )
-    assert budget.get_remaining("the_odds_api", "month") == 500
+    assert manager.consume("test", "month") is True
+    assert manager.get_remaining("test", "month") == 4
+
+    conn = sqlite3.connect(manager.db_path)
+    row = conn.execute(
+        "SELECT used, reset_at_utc FROM rate_limit_budget "
+        "WHERE provider='test' AND window='month'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == 1
+    assert row[1] == "2024-04-01T00:00:00+00:00"
+
+
+def test_reset_mensual_cruza_anio(manager, monkeypatch):
+    from src.radar import rate_limit
+
+    monkeypatch.setitem(rate_limit.PROVIDER_LIMITS, ("test", "month"), 5)
+    conn = sqlite3.connect(manager.db_path)
+    conn.execute(
+        "INSERT INTO rate_limit_budget (provider, window, used, limit_value, reset_at_utc) "
+        "VALUES ('test', 'month', 3, 5, '2025-01-01T00:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(
+        manager,
+        "_now_utc",
+        lambda: datetime(2024, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
+    )
+    assert manager.consume("test", "month") is True
+    assert manager.get_remaining("test", "month") == 1
+
+    monkeypatch.setattr(
+        manager,
+        "_now_utc",
+        lambda: datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+    )
+    assert manager.consume("test", "month") is True
+    assert manager.get_remaining("test", "month") == 4
+
+    conn = sqlite3.connect(manager.db_path)
+    row = conn.execute(
+        "SELECT used, reset_at_utc FROM rate_limit_budget "
+        "WHERE provider='test' AND window='month'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == 1
+    assert row[1] == "2025-02-01T00:00:00+00:00"
 
 
 def test_concurrencia_agotamiento(budget, monkeypatch):

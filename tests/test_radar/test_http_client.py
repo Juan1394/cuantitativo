@@ -25,9 +25,9 @@ def test_before_attempt_called_per_retry(httpx_mock, monkeypatch):
 
 def test_before_attempt_false_aborts(httpx_mock, monkeypatch):
     monkeypatch.setattr(http_client.time, "sleep", lambda _seconds: None)
-    httpx_mock.add_response(status_code=503)
-    httpx_mock.add_response(status_code=503)
-    httpx_mock.add_response(json={"ok": True})
+    httpx_mock.add_response(status_code=503, is_optional=True)
+    httpx_mock.add_response(status_code=503, is_optional=True)
+    httpx_mock.add_response(json={"ok": True}, is_optional=True)
     calls = 0
 
     def before_attempt():
