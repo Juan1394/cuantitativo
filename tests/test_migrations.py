@@ -30,6 +30,7 @@ EXPECTED_TABLE_NAMES = {
     "performance_snapshots",
     "model_artifacts",
     "active_models",
+    "rate_limit_budget",
 }
 
 
@@ -68,7 +69,7 @@ def test_bd_vacia_migra_de_0_a_ultima_version(tmp_path):
         assert applied == expected_names
         assert get_current_version(conn) == versions[-1]
         assert set(_table_names(conn)) == EXPECTED_TABLE_NAMES
-        assert len(_table_names(conn)) == 18
+        assert len(_table_names(conn)) == 19
         assert len(_index_names(conn)) == 7
     finally:
         conn.close()
@@ -84,7 +85,7 @@ def test_aplicar_dos_veces_no_rompe_ni_duplica(tmp_path):
         assert second == []
         assert get_current_version(conn) == list_migrations(MIGRATIONS_DIR)[-1][0]
         assert set(_table_names(conn)) == EXPECTED_TABLE_NAMES
-        assert len(_table_names(conn)) == 18
+        assert len(_table_names(conn)) == 19
         assert len(_index_names(conn)) == 7
         assert len(_index_names(conn)) == len(set(_index_names(conn)))
     finally:
@@ -397,7 +398,7 @@ def test_0005_con_filas_hijas(tmp_path):
 
         applied = apply_migrations(conn, MIGRATIONS_DIR)
 
-        assert applied == ["0005_bets_constraints.sql"]
+        assert applied == ["0005_bets_constraints.sql", "0006_rate_limit_budget.sql"]
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert tuple(
             conn.execute("SELECT * FROM bets WHERE bet_id = ?", (bet_id,)).fetchone()
