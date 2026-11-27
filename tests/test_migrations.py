@@ -800,7 +800,8 @@ def test_0009_preserva_datos_existentes(tmp_path):
         applied = apply_migrations(conn, MIGRATIONS_DIR)
 
         assert "0009_snapshot_skip_team_not_confirmed.sql" in applied
-        assert get_current_version(conn) == 9
+        expected_final = max(v for v, _ in list_migrations(MIGRATIONS_DIR))
+        assert get_current_version(conn) == expected_final
         after = conn.execute(
             "SELECT snapshot_id, event_id, market, selection, odds, source, status, "
             "skip_reason, captured_at_utc FROM snapshots ORDER BY snapshot_id"
