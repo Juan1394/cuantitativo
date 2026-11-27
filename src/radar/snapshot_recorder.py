@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from src.db import get_connection
+from src.data_quality import log_validation, validate_event, validate_odds
 from src.radar.normalization import get_alias_status, resolve_odds_event_to_local
 from src.radar.rate_limit import RateLimitBudgetManager
 from src.radar.the_odds_api import SHARP_BOOKMAKERS, SPORT_KEY_MAP
@@ -121,7 +122,7 @@ class SnapshotRecorder:
         return datetime.now(timezone.utc)
 
     def plan(self, events: list[dict], now_utc: datetime) -> list[SnapshotPlan]:
-        """Calcula próximos planes sin llamar a proveedores ni escribir en SQLite."""
+        """Calcula planes, registrando y omitiendo eventos que fallen la validación."""
         now = _as_utc_datetime(now_utc)
         near_window = timedelta(hours=self.settings.snapshot_near_window_h)
         near_interval = timedelta(hours=self.settings.snapshot_interval_near_h)
@@ -130,6 +131,16 @@ class SnapshotRecorder:
 
         with closing(get_connection(self.db_path)) as conn:
             for event in events:
+                validation = validate_event(event, now)
+                if not validation.valid:
+                    event_id = event.get("event_id") if isinstance(event, dict) else None
+                    log_validation(conn, "event", event_id, validation, now)
+                    logger.warning(
+                        "invalid_event event_id=%s reasons=%s",
+                        event_id,
+                        [code for code, _ in validation.reasons],
+                    )
+                    continue
                 if event.get("match_status") != "scheduled":
                     continue
                 competition_code = event.get("competition_code")
@@ -161,6 +172,7 @@ class SnapshotRecorder:
                         priority=int(time_to_kickoff.total_seconds()),
                     )
                 )
+            conn.commit()
 
         return sorted(eligible, key=lambda item: (item.priority, item.kickoff_utc))
 
@@ -339,6 +351,11 @@ class SnapshotRecorder:
                                         outcomes = market.get("outcomes")
                                         if not isinstance(outcomes, list):
                                             continue
+                                        market_captured_at = (
+                                            market.get("last_update")
+                                            or bookmaker.get("last_update")
+                                            or captured_at
+                                        )
                                         for outcome in outcomes:
                                             if not isinstance(outcome, dict):
                                                 continue
@@ -365,19 +382,71 @@ class SnapshotRecorder:
                                                     bookmaker_key,
                                                     "valid",
                                                     None,
-                                                    captured_at,
+                                                    market_captured_at,
                                                 )
                                             )
 
                             if event_rows:
-                                conn.executemany(insert_sql, event_rows)
-                                results_by_event[event_id] = SnapshotResult(
-                                    event_id=event_id,
-                                    status="valid",
-                                    rows_written=len(event_rows),
-                                    skip_reason=None,
-                                    error=None,
-                                )
+                                odds_by_market: dict[tuple[str, str], list[dict]] = defaultdict(list)
+                                for row in event_rows:
+                                    # Cada bookmaker aporta su propio mercado 1X2; sumar
+                                    # sus selecciones entre fuentes duplicaría el overround.
+                                    odds_by_market[(row[1], row[4])].append(
+                                        {"odds": row[3], "captured_at_utc": row[7]}
+                                    )
+                                validation_results = [
+                                    (market_name, validate_odds(market_odds, now))
+                                    for (market_name, _source), market_odds in odds_by_market.items()
+                                ]
+                                rejected = [
+                                    (market_name, result)
+                                    for market_name, result in validation_results
+                                    if not result.valid
+                                ]
+                                if rejected:
+                                    for market_name, result in rejected:
+                                        log_validation(
+                                            conn, "odds", event_id, result, now
+                                        )
+                                        if any(code == "stale_data" for code, _ in result.reasons):
+                                            conn.execute(
+                                                insert_sql,
+                                                (
+                                                    event_id,
+                                                    market_name,
+                                                    "ALL",
+                                                    0.0,
+                                                    "system",
+                                                    "gap",
+                                                    "stale_data",
+                                                    captured_at,
+                                                ),
+                                            )
+                                    reason = (
+                                        "stale_data"
+                                        if any(
+                                            code == "stale_data"
+                                            for _, result in rejected
+                                            for code, _ in result.reasons
+                                        )
+                                        else None
+                                    )
+                                    results_by_event[event_id] = SnapshotResult(
+                                        event_id=event_id,
+                                        status="gap",
+                                        rows_written=1 if reason == "stale_data" else 0,
+                                        skip_reason=reason,
+                                        error=None,
+                                    )
+                                else:
+                                    conn.executemany(insert_sql, event_rows)
+                                    results_by_event[event_id] = SnapshotResult(
+                                        event_id=event_id,
+                                        status="valid",
+                                        rows_written=len(event_rows),
+                                        skip_reason=None,
+                                        error=None,
+                                    )
                             else:
                                 results_by_event[event_id] = SnapshotResult(
                                     event_id=event_id,
