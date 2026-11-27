@@ -65,12 +65,15 @@ def get_json(
 
         _LAST_STATUS_CODE.set(response.status_code)
         if response.status_code == 429:
-            return {
-                "error": "rate_limit",
-                "retry_after_seconds": _retry_after_seconds(
-                    response.headers.get("Retry-After")
-                ),
-            }
+            retry_after_seconds = _retry_after_seconds(
+                response.headers.get("Retry-After")
+            )
+            logger.warning(
+                "http_rate_limited url=%s retry_after_seconds=%s",
+                url,
+                retry_after_seconds,
+            )
+            return None
         if 500 <= response.status_code <= 599:
             if attempt < 2:
                 time.sleep(2**attempt)
@@ -99,5 +102,5 @@ def get_json(
             logger.warning("http_json_unexpected_shape url=%s status_code=%s", url, response.status_code)
             return None
         return payload
-    return None
+    return None  # pragma: no cover  # unreachable tras los returns anteriores
 
