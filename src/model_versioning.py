@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ SAVEPOINT_NAME = "model_versioning"
 AUDIT_ACTOR = "system"
 AUDIT_ACTION = "model_rollback"
 AUDIT_OUTCOME = "success"
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -97,8 +99,10 @@ def _ensure_artifact_exists(
         raise ValueError(f"model_version {model_version_id} has no artifact")
 
     model_path = Path(row[0])
-    if not model_path.exists():
-        raise FileNotFoundError(str(model_path))
+    if not model_path.is_file():
+        raise FileNotFoundError(
+            f"model_version {model_version_id} artifact not found: {model_path}"
+        )
 
 
 def _recent_model_version_id(
@@ -170,7 +174,26 @@ def get_active_model_version(
         if row is not None:
             return int(row[0])
 
-    return _recent_model_version_id(conn, competition_code)
+    recent_model_version_id = _recent_model_version_id(conn, competition_code)
+    if recent_model_version_id is None:
+        return None
+
+    artifact = conn.execute(
+        "SELECT model_path FROM model_artifacts WHERE model_version_id = ?",
+        (recent_model_version_id,),
+    ).fetchone()
+    if (
+        artifact is None
+        or artifact[0] is None
+        or not Path(artifact[0]).is_file()
+    ):
+        logger.warning(
+            "model_version %s has no available artifact; fallback ignored",
+            recent_model_version_id,
+        )
+        return None
+
+    return recent_model_version_id
 
 
 def get_model_version(

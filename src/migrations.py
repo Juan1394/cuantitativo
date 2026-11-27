@@ -119,34 +119,49 @@ def _execute_sql_file(conn: sqlite3.Connection, path: Path) -> None:
 def apply_migrations(
     conn: sqlite3.Connection, migrations_dir: Path
 ) -> list[str]:
-    """Aplica las migraciones pendientes y devuelve sus nombres de fichero."""
+    """Aplica migraciones con FKs desactivadas durante DDL y valida antes/después del commit."""
 
-    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("PRAGMA foreign_keys = OFF")
     applied: list[str] = []
     migration_names: list[str] = []
 
     try:
-        current_version = get_current_version(conn)
-        for version, path in list_migrations(migrations_dir):
-            if version <= current_version:
-                continue
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current_version = get_current_version(conn)
+            for version, path in list_migrations(migrations_dir):
+                if version <= current_version:
+                    continue
 
-            try:
-                _execute_sql_file(conn, path)
-                conn.execute(f"PRAGMA user_version = {version}")
-            except Exception as exc:
+                try:
+                    _execute_sql_file(conn, path)
+                    conn.execute(f"PRAGMA user_version = {version}")
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"error al aplicar la migracion {path.name}"
+                    ) from exc
+
+                migration_names.append(path.name)
+                applied.append(path.name)
+
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
                 raise RuntimeError(
-                    f"error al aplicar la migracion {path.name}"
-                ) from exc
+                    f"foreign key violations after migrations: {violations!r}"
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
-            migration_names.append(path.name)
-            applied.append(path.name)
-
-        conn.execute("COMMIT")
-    except BaseException:
-        if conn.in_transaction:
-            conn.execute("ROLLBACK")
-        raise
+    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise RuntimeError(
+            f"foreign key violations after migrations: {violations!r}"
+        )
 
     for name in migration_names:
         logger.info("migracion aplicada: %s", name)
