@@ -29,3 +29,13 @@ Añade su par proveedor/ventana y límite en `PROVIDER_LIMITS`, crea una migraci
 Los resultados usan `valid` cuando se escriben cuotas sharp, `gap` para fallos o eventos ausentes, y `skipped` cuando no corresponde guardar cuotas. Los `skip_reasons` admitidos son `daily_cap_reached`, `too_far_from_kickoff`, `budget_exhausted`, `no_odds_available`, `league_not_in_response`, `api_error` y `dry_run_disabled`.
 
 La política que decide qué eventos deben planificarse (límites diarios, ventanas y prioridades de negocio) pertenece a Fase 3, no al recorder. El plan solo filtra estado, kickoff y competiciones activas, y evita capturas demasiado recientes.
+
+## Normalización
+
+Las fuentes de datos pueden identificar al mismo equipo con nombres distintos: por ejemplo, football-data.co.uk usa `Man Utd`, football-data.org `Manchester United FC` y The Odds API `Manchester United`. El módulo `normalization` resuelve esos nombres contra la tabla `team_aliases` y traduce mercados y selecciones al vocabulario canónico.
+
+El algoritmo de equipos aplica, en orden, una coincidencia exacta por alias confirmado, normalización de sufijos y abreviaturas, fuzzy matching con umbral de 92 y, si no puede resolverlo, registra el nombre como `pending`. Un fuzzy hit también queda pendiente de revisión; nunca confirma automáticamente un alias. Las entradas nuevas generan un warning y el usuario debe confirmarlas manualmente antes de considerarlas aliases verificados.
+
+La migración 0008 incluye únicamente 15 aliases confirmados: cinco equipos E0 (Manchester United, Manchester City, Arsenal, Liverpool y Chelsea), cada uno con los tres nombres de origen documentados para football-data.co.uk, football-data.org y The Odds API. El seed es deliberadamente mínimo y no infiere nombres para el resto de los equipos.
+
+`resolve_fixture` solo resuelve un evento cuando ambos equipos están mapeados y existe exactamente un evento local con la competición y un kickoff dentro de ±10 minutos. Esta ronda añade el módulo de normalización, pero no lo integra en `SnapshotRecorder`; esa integración queda para la ronda 1.3.2.

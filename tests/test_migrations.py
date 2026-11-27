@@ -31,6 +31,7 @@ EXPECTED_TABLE_NAMES = {
     "model_artifacts",
     "active_models",
     "rate_limit_budget",
+    "team_aliases",
 }
 
 
@@ -69,8 +70,8 @@ def test_bd_vacia_migra_de_0_a_ultima_version(tmp_path):
         assert applied == expected_names
         assert get_current_version(conn) == versions[-1]
         assert set(_table_names(conn)) == EXPECTED_TABLE_NAMES
-        assert len(_table_names(conn)) == 19
-        assert len(_index_names(conn)) == 7
+        assert len(_table_names(conn)) == 20
+        assert len(_index_names(conn)) == 10
     finally:
         conn.close()
 
@@ -85,8 +86,8 @@ def test_aplicar_dos_veces_no_rompe_ni_duplica(tmp_path):
         assert second == []
         assert get_current_version(conn) == list_migrations(MIGRATIONS_DIR)[-1][0]
         assert set(_table_names(conn)) == EXPECTED_TABLE_NAMES
-        assert len(_table_names(conn)) == 19
-        assert len(_index_names(conn)) == 7
+        assert len(_table_names(conn)) == 20
+        assert len(_index_names(conn)) == 10
         assert len(_index_names(conn)) == len(set(_index_names(conn)))
     finally:
         conn.close()
@@ -546,9 +547,10 @@ def test_0007_recrea_snapshots_con_skip_reasons_extendidos(tmp_path):
         conn.commit()
 
         assert apply_migrations(conn, MIGRATIONS_DIR) == [
-            "0007_extend_snapshot_skip_reasons.sql"
+            "0007_extend_snapshot_skip_reasons.sql",
+            "0008_team_aliases.sql",
         ]
-        assert get_current_version(conn) == 7
+        assert get_current_version(conn) == 8
         row = conn.execute(
             "SELECT event_id, market, selection, odds, source, status, skip_reason, "
             "captured_at_utc FROM snapshots"
@@ -584,5 +586,134 @@ def test_0007_recrea_snapshots_con_skip_reasons_extendidos(tmp_path):
             )
         }
         assert {"idx_snapshots_event_captured", "idx_snapshots_status"}.issubset(index_names)
+    finally:
+        conn.close()
+
+
+def test_0008_crea_team_aliases(tmp_path):
+    conn = get_connection(tmp_path / "team_aliases.db")
+    try:
+        apply_migrations(conn, MIGRATIONS_DIR)
+
+        table = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'team_aliases'"
+        ).fetchone()
+        assert table is not None
+        index_names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' "
+                "AND tbl_name = 'team_aliases'"
+            )
+        }
+        assert {
+            "idx_team_aliases_canonical",
+            "idx_team_aliases_lookup",
+            "idx_team_aliases_status",
+        }.issubset(index_names)
+
+        values = (
+            "Test FC",
+            "test raw",
+            "E0",
+            "manual",
+            "pending",
+            "2026-01-01T00:00:00+00:00",
+        )
+        conn.execute(
+            "INSERT INTO team_aliases "
+            "(canonical_name, raw_name, competition_code, source, status, created_at_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            values,
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO team_aliases "
+                "(canonical_name, raw_name, competition_code, source, status, created_at_utc) "
+                "VALUES ('Other', 'test raw', 'E0', 'manual', 'pending', "
+                "'2026-01-01T00:00:00+00:00')"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO team_aliases "
+                "(canonical_name, raw_name, competition_code, source, status, created_at_utc) "
+                "VALUES ('Bad source', 'bad-source', 'E0', 'unknown', 'pending', "
+                "'2026-01-01T00:00:00+00:00')"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO team_aliases "
+                "(canonical_name, raw_name, competition_code, source, status, created_at_utc) "
+                "VALUES ('Bad status', 'bad-status', 'E0', 'manual', 'unknown', "
+                "'2026-01-01T00:00:00+00:00')"
+            )
+    finally:
+        conn.close()
+
+
+def test_0008_confirmed_requiere_verified_at(tmp_path):
+    conn = get_connection(tmp_path / "confirmed_alias.db")
+    try:
+        apply_migrations(conn, MIGRATIONS_DIR)
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO team_aliases "
+                "(canonical_name, raw_name, competition_code, source, status, "
+                "created_at_utc, verified_at_utc) "
+                "VALUES ('Example FC', 'example', 'E0', 'manual', 'confirmed', "
+                "'2026-01-01T00:00:00+00:00', NULL)"
+            )
+    finally:
+        conn.close()
+
+
+def test_0008_fuzzy_score_solo_en_no_manual(tmp_path):
+    conn = get_connection(tmp_path / "fuzzy_score.db")
+    try:
+        apply_migrations(conn, MIGRATIONS_DIR)
+        timestamp = "2026-01-01T00:00:00+00:00"
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO team_aliases "
+                "(canonical_name, raw_name, competition_code, source, status, "
+                "fuzzy_score, created_at_utc) "
+                "VALUES ('Manual score', 'manual-score', 'E0', 'manual', 'pending', "
+                "95, ?)" ,
+                (timestamp,),
+            )
+        conn.execute(
+            "INSERT INTO team_aliases "
+            "(canonical_name, raw_name, competition_code, source, status, "
+            "fuzzy_score, created_at_utc) "
+            "VALUES ('Manual no score', 'manual-no-score', 'E0', 'manual', 'pending', "
+            "NULL, ?)",
+            (timestamp,),
+        )
+        conn.execute(
+            "INSERT INTO team_aliases "
+            "(canonical_name, raw_name, competition_code, source, status, "
+            "fuzzy_score, created_at_utc) "
+            "VALUES ('Pending fuzzy', 'pending-fuzzy', 'E0', 'the_odds_api', 'pending', "
+            "95, ?)",
+            (timestamp,),
+        )
+        conn.execute(
+            "INSERT INTO team_aliases "
+            "(canonical_name, raw_name, competition_code, source, status, fuzzy_score, "
+            "created_at_utc, verified_at_utc) "
+            "VALUES ('Confirmed fuzzy', 'confirmed-fuzzy', 'E0', 'the_odds_api', "
+            "'confirmed', 95, ?, ?)",
+            (timestamp, timestamp),
+        )
+        for score in (0, -1):
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO team_aliases "
+                    "(canonical_name, raw_name, competition_code, source, status, "
+                    "fuzzy_score, created_at_utc) "
+                    "VALUES ('Invalid score', ?, 'E0', 'the_odds_api', 'pending', ?, ?)",
+                    (f"invalid-{score}", score, timestamp),
+                )
     finally:
         conn.close()
