@@ -9,6 +9,7 @@ import pytest
 
 from src.db import get_connection
 from src.migrations import apply_migrations
+from src.radar.normalization import normalize_team_name
 from src.radar.rate_limit import RateLimitBudgetManager
 from src.radar.snapshot_recorder import SnapshotPlan, SnapshotRecorder
 
@@ -92,6 +93,20 @@ def recorder_env(tmp_path):
     ]
     for event in events:
         _insert_event(conn, event)
+        for team_name in (event["home_team"], event["away_team"]):
+            conn.execute(
+                "INSERT INTO team_aliases "
+                "(canonical_name, raw_name, competition_code, source, status, "
+                "created_at_utc, verified_at_utc) "
+                "VALUES (?, ?, ?, 'the_odds_api', 'confirmed', ?, ?)",
+                (
+                    team_name,
+                    team_name,
+                    event["competition_code"],
+                    event["created_at_utc"],
+                    event["created_at_utc"],
+                ),
+            )
     conn.commit()
     conn.close()
 
@@ -433,3 +448,160 @@ def test_get_event_status_evento_inexistente(recorder_env, monkeypatch):
         "min_valid_met": False,
         "last_valid_at_utc": None,
     }
+
+
+def test_execute_bloquea_alias_pending_aunque_canonical_confirmed(
+    recorder_env, caplog
+):
+    recorder, _, odds_client, _, _, db_path = recorder_env
+    event = _event("pending-home", "E0", NOW + timedelta(hours=3))
+    event.update(home_team="Manchester United", away_team="Arsenal")
+    conn = get_connection(db_path)
+    _insert_event(conn, event)
+    assert normalize_team_name(
+        "Manchester Untd", "E0", source="the_odds_api", conn=conn
+    ) == ("Manchester United", "fuzzy")
+    conn.commit()
+    conn.close()
+
+    plan = _plan_for(recorder, event)
+    odds_event = _odds_event({**event, "home_team": "Manchester Untd"}, 1)
+    odds_client.get_odds.return_value = [odds_event]
+
+    result = recorder.execute([plan], NOW)[0]
+
+    conn = get_connection(db_path)
+    row_count = conn.execute(
+        "SELECT COUNT(*) FROM snapshots WHERE event_id = ?", (event["event_id"],)
+    ).fetchone()[0]
+    conn.close()
+    assert result.status == "gap"
+    assert result.skip_reason == "team_not_confirmed"
+    assert row_count == 0
+    assert "team_not_confirmed" in caplog.text
+
+
+def test_execute_alias_no_existente_bloquea(recorder_env):
+    recorder, _, odds_client, _, _, db_path = recorder_env
+    event = _event("unknown-home", "E0", NOW + timedelta(hours=3))
+    event.update(home_team="Manchester United", away_team="Arsenal")
+    conn = get_connection(db_path)
+    _insert_event(conn, event)
+    conn.commit()
+    conn.close()
+    plan = _plan_for(recorder, event)
+    odds_client.get_odds.return_value = [
+        _odds_event({**event, "home_team": "Equipo Desconocido XYZ"}, 1)
+    ]
+
+    result = recorder.execute([plan], NOW)[0]
+
+    assert result.status == "gap"
+    assert result.skip_reason == "league_not_in_response"
+
+
+def test_execute_ambos_confirmed_escribe_normal(recorder_env):
+    recorder, _, odds_client, _, _, db_path = recorder_env
+    event = _event("confirmed-pair", "E0", NOW + timedelta(hours=3))
+    event.update(home_team="Manchester United", away_team="Arsenal")
+    conn = get_connection(db_path)
+    _insert_event(conn, event)
+    conn.commit()
+    conn.close()
+    plan = _plan_for(recorder, event)
+    odds_client.get_odds.return_value = [_odds_event(event, 1)]
+
+    result = recorder.execute([plan], NOW)[0]
+
+    conn = get_connection(db_path)
+    row_count = conn.execute(
+        "SELECT COUNT(*) FROM snapshots WHERE event_id = ?", (event["event_id"],)
+    ).fetchone()[0]
+    conn.close()
+    assert result.status == "valid"
+    assert result.rows_written > 0
+    assert row_count > 0
+
+
+def test_execute_un_equipo_pending_otro_confirmed_bloquea(recorder_env):
+    recorder, _, odds_client, _, _, db_path = recorder_env
+    event = _event("pending-away", "E0", NOW + timedelta(hours=3))
+    event.update(home_team="Arsenal", away_team="Manchester United")
+    conn = get_connection(db_path)
+    _insert_event(conn, event)
+    conn.commit()
+    conn.close()
+    plan = _plan_for(recorder, event)
+    odds_client.get_odds.return_value = [
+        _odds_event({**event, "away_team": "Manchester Untd"}, 1)
+    ]
+
+    result = recorder.execute([plan], NOW)[0]
+
+    conn = get_connection(db_path)
+    row_count = conn.execute(
+        "SELECT COUNT(*) FROM snapshots WHERE event_id = ?", (event["event_id"],)
+    ).fetchone()[0]
+    conn.close()
+    assert result.status == "gap"
+    assert result.skip_reason == "team_not_confirmed"
+    assert row_count == 0
+
+
+def test_execute_transaccion_compartida_validacion_escritura(recorder_env):
+    recorder, _, odds_client, _, _, db_path = recorder_env
+    confirmed_event = _event("txn-confirmed", "E0", NOW + timedelta(hours=3))
+    confirmed_event.update(home_team="Manchester United", away_team="Arsenal")
+    pending_event = _event("txn-pending", "E0", NOW + timedelta(hours=4))
+    pending_event.update(home_team="Manchester United", away_team="Arsenal")
+    conn = get_connection(db_path)
+    _insert_event(conn, confirmed_event)
+    _insert_event(conn, pending_event)
+    conn.commit()
+    conn.close()
+    plans = [
+        _plan_for(recorder, confirmed_event),
+        _plan_for(recorder, pending_event),
+    ]
+    confirmed_odds = _odds_event(confirmed_event, 1)
+    pending_odds = _odds_event(
+        {**pending_event, "home_team": "Manchester Untd"}, 2
+    )
+    odds_client.get_odds.return_value = [confirmed_odds, pending_odds]
+
+    first_results = recorder.execute(plans, NOW)
+    first_by_id = {result.event_id: result for result in first_results}
+    conn = get_connection(db_path)
+    confirmed_rows = conn.execute(
+        "SELECT COUNT(*) FROM snapshots WHERE event_id = ?",
+        (confirmed_event["event_id"],),
+    ).fetchone()[0]
+    pending_rows = conn.execute(
+        "SELECT COUNT(*) FROM snapshots WHERE event_id = ?",
+        (pending_event["event_id"],),
+    ).fetchone()[0]
+    conn.execute("DELETE FROM snapshots")
+    conn.execute(
+        "CREATE TRIGGER fail_confirmed_snapshot_insert "
+        "BEFORE INSERT ON snapshots "
+        "WHEN NEW.event_id = 'txn-confirmed' AND NEW.selection = 'DRAW' "
+        "BEGIN SELECT RAISE(ABORT, 'simulated database failure'); END"
+    )
+    conn.commit()
+    conn.close()
+    assert first_by_id[confirmed_event["event_id"]].status == "valid"
+    assert first_by_id[pending_event["event_id"]].status == "gap"
+    assert first_by_id[pending_event["event_id"]].skip_reason == "team_not_confirmed"
+    assert confirmed_rows > 0
+    assert pending_rows == 0
+
+    second_results = recorder.execute(plans, NOW)
+    second_by_id = {result.event_id: result for result in second_results}
+    conn = get_connection(db_path)
+    remaining_rows = conn.execute(
+        "SELECT COUNT(*) FROM snapshots WHERE event_id IN (?, ?)",
+        (confirmed_event["event_id"], pending_event["event_id"]),
+    ).fetchone()[0]
+    conn.close()
+    assert remaining_rows == 0
+    assert all(result.skip_reason == "api_error" for result in second_by_id.values())
