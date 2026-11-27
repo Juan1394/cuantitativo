@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re
 import shutil
 from datetime import datetime as real_datetime
 from itertools import count
@@ -391,7 +392,7 @@ def test_artefacto_directorio_rechazado(conn):
 
     with pytest.raises(
         FileNotFoundError,
-        match=f"model_version {target} artifact not found: {directory_path}",
+        match=re.escape(f"model_version {target} artifact not found: {directory_path}"),
     ):
         rollback_active_model(conn, "SP1", target)
 
