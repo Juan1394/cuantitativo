@@ -354,11 +354,18 @@ class SnapshotRecorder:
         return [results_by_event[plan.event_id] for plan in plans]
 
     def get_event_status(self, event_id: str) -> dict:
-        """Resume estados y capturas válidas recientes de un evento."""
+        """Resume estados recientes de un evento.
+
+        valid = número de capturas temporales distintas (COUNT DISTINCT captured_at_utc),
+        no de filas. Cada execute() sobre un evento puede escribir múltiples filas
+        (bookmakers × outcomes) con el mismo captured_at_utc; eso cuenta como 1 captura.
+        """
         cutoff = self._now_utc() - timedelta(days=7)
         with closing(get_connection(self.db_path)) as conn:
             rows = conn.execute(
-                "SELECT status, COUNT(*) AS count FROM snapshots "
+                "SELECT status, CASE WHEN status = 'valid' "
+                "THEN COUNT(DISTINCT captured_at_utc) ELSE COUNT(*) END AS count "
+                "FROM snapshots "
                 "WHERE event_id = ? AND (status != 'valid' OR captured_at_utc >= ?) "
                 "GROUP BY status",
                 (event_id, cutoff.isoformat()),

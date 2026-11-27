@@ -334,7 +334,12 @@ def test_get_event_status(recorder_env, monkeypatch):
     recorder, _, _, settings, events, db_path = recorder_env
     monkeypatch.setattr(recorder, "_now_utc", lambda: NOW)
     conn = get_connection(db_path)
-    for index in range(3):
+    capture_times = (
+        NOW - timedelta(hours=2),
+        NOW - timedelta(hours=1),
+        NOW - timedelta(minutes=30),
+    )
+    for index, captured_at in enumerate(capture_times):
         conn.execute(
             "INSERT INTO snapshots "
             "(event_id, market, selection, odds, source, status, captured_at_utc) "
@@ -343,7 +348,7 @@ def test_get_event_status(recorder_env, monkeypatch):
                 events[0]["event_id"],
                 f"SELECTION_{index}",
                 2.0 + index,
-                (NOW - timedelta(hours=index)).isoformat(),
+                captured_at.isoformat(),
             ),
         )
     conn.execute(
@@ -362,10 +367,59 @@ def test_get_event_status(recorder_env, monkeypatch):
         "gap": 1,
         "skipped": 0,
         "min_valid_met": True,
-        "last_valid_at_utc": NOW.isoformat(),
+        "last_valid_at_utc": capture_times[-1].isoformat(),
     }
     settings.snapshot_min_valid_per_event = 4
     assert recorder.get_event_status(events[0]["event_id"])["min_valid_met"] is False
+
+
+def test_get_event_status_una_sola_captura_no_cumple_minimo(
+    recorder_env, monkeypatch
+):
+    recorder, _, _, settings, events, db_path = recorder_env
+    monkeypatch.setattr(recorder, "_now_utc", lambda: NOW)
+    captured_at = NOW.isoformat()
+    conn = get_connection(db_path)
+    for source in ("pinnacle", "betfair_ex_eu"):
+        for selection in ("HOME", "DRAW", "AWAY"):
+            conn.execute(
+                "INSERT INTO snapshots "
+                "(event_id, market, selection, odds, source, status, captured_at_utc) "
+                "VALUES (?, '1X2', ?, 2.0, ?, 'valid', ?)",
+                (events[0]["event_id"], selection, source, captured_at),
+            )
+    conn.commit()
+    conn.close()
+
+    settings.snapshot_min_valid_per_event = 3
+    status = recorder.get_event_status(events[0]["event_id"])
+    assert status["valid"] == 1
+    assert status["min_valid_met"] is False
+
+
+def test_get_event_status_tres_capturas_cumplen_minimo(recorder_env, monkeypatch):
+    recorder, _, _, settings, events, db_path = recorder_env
+    monkeypatch.setattr(recorder, "_now_utc", lambda: NOW)
+    capture_times = (
+        NOW - timedelta(hours=2),
+        NOW - timedelta(hours=1),
+        NOW - timedelta(minutes=30),
+    )
+    conn = get_connection(db_path)
+    for index, captured_at in enumerate(capture_times):
+        conn.execute(
+            "INSERT INTO snapshots "
+            "(event_id, market, selection, odds, source, status, captured_at_utc) "
+            "VALUES (?, '1X2', ?, 2.0, 'pinnacle', 'valid', ?)",
+            (events[0]["event_id"], f"SELECTION_{index}", captured_at.isoformat()),
+        )
+    conn.commit()
+    conn.close()
+
+    settings.snapshot_min_valid_per_event = 3
+    status = recorder.get_event_status(events[0]["event_id"])
+    assert status["valid"] == 3
+    assert status["min_valid_met"] is True
 
 
 def test_get_event_status_evento_inexistente(recorder_env, monkeypatch):
