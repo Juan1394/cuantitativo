@@ -776,21 +776,37 @@ def test_0009_preserva_datos_existentes(tmp_path):
             "INSERT INTO events "
             "(event_id, competition_code, home_team, away_team, kickoff_utc, "
             "match_status, created_at_utc, updated_at_utc) "
-            "VALUES ('event-preserve-0009', 'E0', 'Home', 'Away', "
+            "VALUES ('event-preserve-0009', 'SP1', 'Manchester United', 'Arsenal', "
             "'2030-01-01T12:00:00+00:00', 'scheduled', "
             "'2029-12-01T00:00:00+00:00', '2029-12-01T00:00:00+00:00')"
         )
-        conn.execute(
+        snapshot_id = conn.execute(
             "INSERT INTO snapshots "
             "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
-            "VALUES ('event-preserve-0009', '1X2', 'HOME', 2.1, 'pinnacle', 'valid', "
+            "VALUES ('event-preserve-0009', '1X2', 'HOME', 2.0, 'pinnacle', 'valid', "
             "NULL, '2029-12-31T12:00:00+00:00')"
-        )
+        ).lastrowid
+        model_version_id = conn.execute(
+            "INSERT INTO model_versions "
+            "(competition_code, train_until_utc, matches_count, hyperparams_json, created_at_utc) "
+            "VALUES ('SP1', '2029-12-01T00:00:00+00:00', 10, '{}', "
+            "'2029-12-01T00:00:00+00:00')"
+        ).lastrowid
+        bet_id = conn.execute(
+            "INSERT INTO bets "
+            "(event_id, market, selection, manual_odds, stake, ev, model_probability, "
+            "status, idempotency_key, created_at_utc) "
+            "VALUES ('event-preserve-0009', '1X2', 'HOME', 2.0, 10.0, 0.05, 0.55, "
+            "'open', 'test-key-0009', '2029-12-31T12:00:00+00:00')"
+        ).lastrowid
         conn.execute(
-            "INSERT INTO snapshots "
-            "(event_id, market, selection, odds, source, status, skip_reason, captured_at_utc) "
-            "VALUES ('event-preserve-0009', '1X2', 'DRAW', 3.2, 'pinnacle', 'skipped', "
-            "'budget_exhausted', '2029-12-31T12:01:00+00:00')"
+            "INSERT INTO decision_explanation "
+            "(bet_id, model_version_id, decision_rules_version, sharp_odds_used, "
+            "sharp_source, snapshot_id_used, devig_method, model_probability, "
+            "implied_probability, ev, edge_pct, decision, reasons_json) "
+            "VALUES (?, ?, 'v1', 2.0, 'pinnacle', ?, 'multiplicative', "
+            "0.55, 0.5, 0.05, 5.0, 'bet', '{}')",
+            (bet_id, model_version_id, snapshot_id),
         )
         conn.commit()
         before = conn.execute(
@@ -808,6 +824,14 @@ def test_0009_preserva_datos_existentes(tmp_path):
             "skip_reason, captured_at_utc FROM snapshots ORDER BY snapshot_id"
         ).fetchall()
         assert [tuple(row) for row in after] == [tuple(row) for row in before]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM snapshots WHERE event_id = ?",
+            ("event-preserve-0009",),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT snapshot_id_used FROM decision_explanation WHERE bet_id = ?",
+            (bet_id,),
+        ).fetchone()[0] == snapshot_id
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()

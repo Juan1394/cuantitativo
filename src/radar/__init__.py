@@ -6,6 +6,7 @@ from src.radar.rate_limit import RateLimitBudgetManager
 from src.radar.snapshot_recorder import SnapshotPlan, SnapshotRecorder, SnapshotResult
 from src.radar.the_odds_api import TheOddsAPIClient
 from src.radar.normalization import (
+    get_alias_status,
     normalize_market,
     normalize_team_name,
     normalize_text,
@@ -22,6 +23,7 @@ __all__ = [
     "SnapshotPlan",
     "SnapshotResult",
     "normalize_team_name",
+    "get_alias_status",
     "normalize_market",
     "normalize_text",
     "resolve_fixture",

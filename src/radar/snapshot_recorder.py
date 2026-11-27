@@ -58,6 +58,49 @@ def _selection_for_outcome(outcome_name: str, home_team: str, away_team: str) ->
     return None
 
 
+def _unresolved_event_id(conn, odds_event: dict, competition_code: str) -> str | None:
+    """Identifica un gap por horario y equipos conocidos, nunca autoriza cuotas.
+
+    Exige una única coincidencia local en ±10 minutos y respeta el canonical de
+    cada alias conocido. Considera también eventos fuera del plan para no atribuir
+    al plan una respuesta que corresponde a otro partido de la competición.
+    """
+    kickoff_text = odds_event.get("commence_time")
+    if not isinstance(kickoff_text, str):
+        return None
+    try:
+        kickoff = _as_utc_datetime(kickoff_text)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    known_teams = {}
+    for side in ("home_team", "away_team"):
+        raw_name = odds_event.get(side)
+        if not isinstance(raw_name, str):
+            return None
+        alias = conn.execute(
+            "SELECT canonical_name FROM team_aliases "
+            "WHERE raw_name = ? AND competition_code = ? AND source = 'the_odds_api'",
+            (raw_name, competition_code),
+        ).fetchone()
+        if alias is not None and alias["canonical_name"]:
+            known_teams[side] = alias["canonical_name"]
+    candidates = []
+    for event in conn.execute(
+        "SELECT event_id, home_team, away_team, kickoff_utc FROM events "
+        "WHERE competition_code = ?",
+        (competition_code,),
+    ):
+        try:
+            local_kickoff = _as_utc_datetime(event["kickoff_utc"])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if abs(local_kickoff - kickoff) > timedelta(minutes=10):
+            continue
+        if all(event[side] == canonical for side, canonical in known_teams.items()):
+            candidates.append(event["event_id"])
+    return candidates[0] if len(candidates) == 1 else None
+
+
 class SnapshotRecorder:
     """Agrupa capturas por liga para minimizar peticiones facturables a The Odds API."""
 
@@ -198,7 +241,8 @@ class SnapshotRecorder:
                 with closing(get_connection(self.db_path)) as conn:
                     try:
                         conn.execute("BEGIN IMMEDIATE")
-                        seen_event_ids: set[str] = set()
+                        resolved_events: dict[str, dict] = {}
+                        unresolved_events: set[str] = set()
                         for odds_event in odds_events:
                             if not isinstance(odds_event, dict):
                                 continue
@@ -208,13 +252,31 @@ class SnapshotRecorder:
                                 competition_code,
                                 source="the_odds_api",
                             )
-                            if (
-                                event_id is None
-                                or event_id not in plan_ids
-                                or event_id in seen_event_ids
-                            ):
+                            if event_id is None:
+                                candidate_id = _unresolved_event_id(
+                                    conn, odds_event, competition_code
+                                )
+                                if candidate_id in plan_ids:
+                                    unresolved_events.add(candidate_id)
+                            elif event_id in plan_ids:
+                                resolved_events.setdefault(event_id, odds_event)
+
+                        for plan in group:
+                            event_id = plan.event_id
+                            odds_event = resolved_events.get(event_id)
+                            if odds_event is None:
+                                results_by_event[event_id] = SnapshotResult(
+                                    event_id=event_id,
+                                    status="gap",
+                                    rows_written=0,
+                                    skip_reason=(
+                                        "team_not_confirmed"
+                                        if event_id in unresolved_events
+                                        else "league_not_in_response"
+                                    ),
+                                    error=None,
+                                )
                                 continue
-                            seen_event_ids.add(event_id)
 
                             raw_home = odds_event.get("home_team")
                             raw_away = odds_event.get("away_team")
@@ -330,15 +392,6 @@ class SnapshotRecorder:
                             conn.rollback()
                         raise
 
-                for plan in group:
-                    if plan.event_id not in results_by_event:
-                        results_by_event[plan.event_id] = SnapshotResult(
-                            event_id=plan.event_id,
-                            status="gap",
-                            rows_written=0,
-                            skip_reason="league_not_in_response",
-                            error=None,
-                        )
             except Exception as exc:
                 logger.exception(
                     "snapshot_group_failed competition_code=%s", competition_code

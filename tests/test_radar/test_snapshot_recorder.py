@@ -481,7 +481,7 @@ def test_execute_bloquea_alias_pending_aunque_canonical_confirmed(
     assert "team_not_confirmed" in caplog.text
 
 
-def test_execute_alias_no_existente_bloquea(recorder_env):
+def test_execute_nombre_desconocido_marca_team_not_confirmed(recorder_env):
     recorder, _, odds_client, _, _, db_path = recorder_env
     event = _event("unknown-home", "E0", NOW + timedelta(hours=3))
     event.update(home_team="Manchester United", away_team="Arsenal")
@@ -497,7 +497,34 @@ def test_execute_alias_no_existente_bloquea(recorder_env):
     result = recorder.execute([plan], NOW)[0]
 
     assert result.status == "gap"
-    assert result.skip_reason == "league_not_in_response"
+    assert result.skip_reason == "team_not_confirmed"
+    conn = get_connection(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_execute_evento_ausente_en_respuesta_marca_league_not_in_response(recorder_env):
+    recorder, _, odds_client, _, events, db_path = recorder_env
+    present, absent = events[:2]
+    plans = recorder.plan([present, absent], NOW)
+    odds_client.get_odds.return_value = [_odds_event(present, 1)]
+
+    results = {result.event_id: result for result in recorder.execute(plans, NOW)}
+
+    assert results[present["event_id"]].status == "valid"
+    assert results[absent["event_id"]].status == "gap"
+    assert results[absent["event_id"]].skip_reason == "league_not_in_response"
+    conn = get_connection(db_path)
+    try:
+        assert len(_valid_rows(conn, present["event_id"])) == 6
+        assert conn.execute(
+            "SELECT COUNT(*) FROM snapshots WHERE event_id = ?",
+            (absent["event_id"],),
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 def test_execute_ambos_confirmed_escribe_normal(recorder_env):

@@ -26,9 +26,36 @@ Añade su par proveedor/ventana y límite en `PROVIDER_LIMITS`, crea una migraci
 
 `SnapshotRecorder` agrupa los planes por liga y realiza una sola llamada de The Odds API por competición, no una llamada por evento. Esta agrupación es crítica para respetar el presupuesto mensual de 500 créditos. La ejecución está protegida por `snapshot_execution_enabled=False` por defecto; solo se habilita explícitamente cuando el proveedor sharp es The Odds API.
 
-Los resultados usan `valid` cuando se escriben cuotas sharp, `gap` para fallos o eventos ausentes, y `skipped` cuando no corresponde guardar cuotas. Los `skip_reasons` admitidos son `daily_cap_reached`, `too_far_from_kickoff`, `budget_exhausted`, `no_odds_available`, `league_not_in_response`, `api_error` y `dry_run_disabled`.
+Los resultados usan `valid` cuando se escriben cuotas sharp, `gap` para fallos o eventos ausentes, y `skipped` cuando no corresponde guardar cuotas. Los `skip_reasons` admitidos son `daily_cap_reached`, `too_far_from_kickoff`, `budget_exhausted`, `no_odds_available`, `league_not_in_response`, `api_error`, `dry_run_disabled` y `team_not_confirmed`.
 
 La política que decide qué eventos deben planificarse (límites diarios, ventanas y prioridades de negocio) pertenece a Fase 3, no al recorder. El plan solo filtra estado, kickoff y competiciones activas, y evita capturas demasiado recientes.
+
+### Aliases confirmados y motivos de gap
+
+Antes de escribir cuotas, el recorder consulta el estado del alias de entrada por
+`raw_name + competition_code + source`, para ambos equipos y con
+`source="the_odds_api"`. La validación y la escritura comparten una transacción
+`BEGIN IMMEDIATE`. Un alias `pending`, `rejected` o inexistente produce
+`gap/team_not_confirmed`; que otro alias del mismo canonical esté confirmado no
+autoriza el nombre recibido.
+
+`team_not_confirmed` también cubre una respuesta cuyo nombre no se puede resolver
+a un `event_id` local. Para atribuir ese gap se exige una única coincidencia local
+en ±10 minutos, compatible con los equipos conocidos. Esta asociación solo marca
+el gap: nunca permite escribir cuotas. Si la respuesta no puede asociarse de forma
+inequívoca, no se atribuye a un partido arbitrario. Los planes sin una respuesta
+identificable quedan como `gap/league_not_in_response`.
+
+| Situación | skip_reason / resultado |
+|-----------|-------------------------|
+| odds_event no está en la respuesta de la API | league_not_in_response |
+| odds_event está pero nombre no resuelve a event_id, y puede asociarse inequívocamente al plan | team_not_confirmed |
+| odds_event resuelve pero home/away alias pending, rejected o inexistente | team_not_confirmed |
+| odds_event resuelve y ambos confirmed, con cuotas sharp válidas | valid (se escriben filas, skip_reason=NULL) |
+
+`normalize_team_name` puede devolver un canonical con método `fuzzy` aunque el
+alias siga `pending`. Su resultado no constituye una aprobación; el recorder debe
+comprobar siempre el estado del alias original antes de persistir cuotas válidas.
 
 ## Normalización
 
