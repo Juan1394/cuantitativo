@@ -89,4 +89,4 @@ def test_both_sin_db_migra_ambas(tmp_path):
     audit_db = ROOT / "data" / "dryrun" / "audit.db"
     for database in (bets_db, audit_db):
         with sqlite3.connect(database) as conn:
-            assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 6

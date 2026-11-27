@@ -330,8 +330,9 @@ def test_migraciones_incrementales_preservan_filas_de_model_versions(tmp_path):
             "0003_model_artifacts.sql",
             "0004_active_models.sql",
             "0005_bets_constraints.sql",
+            "0006_rate_limit_budget.sql",
         ]
-        assert get_current_version(connection) == 5
+        assert get_current_version(connection) == 6
         assert _query_dicts(
             connection, "SELECT * FROM model_versions ORDER BY model_version_id"
         ) == before
