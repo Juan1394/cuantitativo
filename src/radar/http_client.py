@@ -7,6 +7,7 @@ import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -40,6 +41,7 @@ def get_json(
     headers: dict[str, str] | None,
     params: dict[str, Any] | None,
     timeout: int = 10,
+    before_attempt: Callable[[], bool] | None = None,
 ) -> dict[str, Any] | list[Any] | None:
     """Solicita JSON con errores HTTP explícitos y reintentos solo para 5xx.
 
@@ -50,6 +52,9 @@ def get_json(
     """
     _LAST_STATUS_CODE.set(None)
     for attempt in range(3):
+        if before_attempt is not None and not before_attempt():
+            logger.warning("budget_exhausted_before_attempt url=%s", url)
+            return None
         try:
             response = httpx.get(
                 url, headers=headers or {}, params=params or {}, timeout=timeout

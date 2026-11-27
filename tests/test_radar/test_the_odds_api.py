@@ -47,7 +47,7 @@ def test_get_odds_consume_y_devuelve_none_sin_cuota(httpx_mock, client, manager,
     conn.close()
 
     assert client.get_odds("soccer_test") is None
-    assert "monthly_quota_exhausted" in caplog.text
+    assert "monthly_quota_insufficient" in caplog.text
     assert not httpx_mock.get_requests()
 
 
@@ -72,3 +72,64 @@ def test_get_odds_filtra_bookmakers_sharp(httpx_mock, client, manager):
     assert result is not None
     assert {item["key"] for item in result[0]["bookmakers"]} == SHARP_BOOKMAKERS
     assert manager.get_remaining("the_odds_api", "month") == 499
+
+
+def test_get_odds_cost_single_region_single_market(httpx_mock, client, manager):
+    httpx_mock.add_response(json=[])
+
+    assert client.get_odds("soccer_test", regions="eu", markets="h2h") == []
+    assert manager.get_remaining("the_odds_api", "month") == 499
+
+
+def test_get_odds_cost_two_regions_two_markets(httpx_mock, client, manager):
+    httpx_mock.add_response(json=[])
+
+    assert client.get_odds("soccer_test", regions="eu,us", markets="h2h,totals") == []
+    assert manager.get_remaining("the_odds_api", "month") == 496
+
+
+def test_get_odds_insufficient_budget_does_not_call(httpx_mock, client, manager):
+    conn = get_connection(manager.db_path)
+    conn.execute(
+        "INSERT INTO rate_limit_budget VALUES (?, ?, ?, ?, ?)",
+        ("the_odds_api", "month", 498, 500, "2999-01-01T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    assert client.get_odds("soccer_test", regions="eu,us", markets="h2h,totals") is None
+    assert manager.get_remaining("the_odds_api", "month") == 2
+    assert not httpx_mock.get_requests()
+
+
+def test_get_odds_invalid_regions_raises(httpx_mock, client):
+    with pytest.raises(ValueError, match="invalid regions or markets"):
+        client.get_odds("soccer_test", regions="", markets="h2h")
+    assert not httpx_mock.get_requests()
+
+
+def test_missing_key_raises_and_does_not_consume(manager):
+    before = manager.get_remaining("the_odds_api", "month")
+
+    with pytest.raises(ValueError, match="sharp_odds_api_key is required"):
+        TheOddsAPIClient(SimpleNamespace(sharp_odds_api_key=None), manager)
+
+    assert manager.get_remaining("the_odds_api", "month") == before == 500
+
+
+def test_list_events_no_consume(httpx_mock, client, manager):
+    httpx_mock.add_response(json=[{"id": "event-doc-example"}])
+    before = manager.get_remaining("the_odds_api", "month")
+
+    assert client.list_events("soccer_test") == [{"id": "event-doc-example"}]
+    assert manager.get_remaining("the_odds_api", "month") == before == 500
+
+
+def test_list_events_uses_cache(httpx_mock, client):
+    httpx_mock.add_response(json=[{"id": "event-doc-example"}])
+
+    first = client.list_events("soccer_test")
+    second = client.list_events("soccer_test")
+
+    assert first == second == [{"id": "event-doc-example"}]
+    assert len(httpx_mock.get_requests()) == 1

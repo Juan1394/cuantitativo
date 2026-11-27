@@ -23,22 +23,37 @@ SPORT_KEY_MAP = {
 
 
 class TheOddsAPIClient:
-    """Cliente HTTP de The Odds API; únicamente `get_odds` consume cuota."""
+    """Cliente HTTP; solo `get_odds` consume cuota, una vez por llamada lógica.
+
+    El coste normal en Fase 1 es un crédito por cada combinación market × region.
+    Mercados especiales como `h2h_lay` pueden tener otro coste y no están
+    contemplados en este cálculo.
+    """
 
     BASE_URL = "https://api.the-odds-api.com/v4"
     _SPORTS_CACHE_TTL_SECONDS = 24 * 60 * 60
 
     def __init__(self, settings: object, budget: RateLimitBudgetManager):
+        if not getattr(settings, "sharp_odds_api_key", None):
+            raise ValueError("sharp_odds_api_key is required")
         self.settings = settings
-        self.budget = budget
+        self._budget = budget
         self._sports_cache: list[dict[str, Any]] | None = None
         self._sports_cached_at = 0.0
+        self._events_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
     def _api_key(self) -> str:
-        key = getattr(self.settings, "sharp_odds_api_key", None)
-        if not key:
-            raise ValueError("sharp_odds_api_key no está configurada")
-        return str(key)
+        return str(self.settings.sharp_odds_api_key)
+
+    @staticmethod
+    def _compute_cost(regions: str, markets: str) -> int:
+        """Cuenta las combinaciones de regions y markets estándar."""
+        region_count = len([region for region in regions.split(",") if region.strip()])
+        market_count = len([market for market in markets.split(",") if market.strip()])
+        cost = region_count * market_count
+        if cost <= 0:
+            raise ValueError("invalid regions or markets")
+        return cost
 
     def list_sports(self) -> list[dict[str, Any]] | None:
         """Devuelve deportes; endpoint gratuito y cacheado 24 horas en memoria."""
@@ -66,7 +81,11 @@ class TheOddsAPIClient:
         return payload
 
     def list_events(self, sport_key: str) -> list[dict[str, Any]] | None:
-        """Devuelve eventos deportivos; endpoint gratuito según el plan descrito."""
+        """Lista eventos gratis y los cachea en memoria durante 24 horas."""
+        now = time.monotonic()
+        cached = self._events_cache.get(sport_key)
+        if cached is not None and now - cached[0] < self._SPORTS_CACHE_TTL_SECONDS:
+            return cached[1]
         payload = get_json(
             f"{self.BASE_URL}/sports/{sport_key}/events",
             headers={},
@@ -78,6 +97,7 @@ class TheOddsAPIClient:
             isinstance(payload, list)
             and all(isinstance(item, dict) and "id" in item for item in payload)
         ):
+            self._events_cache[sport_key] = (now, payload)
             return payload
         logger.warning(
             "the_odds_api_missing_expected_key sport_key=%s key=id status_code=%s",
@@ -92,9 +112,19 @@ class TheOddsAPIClient:
         regions: str = "eu",
         markets: str = "h2h",
     ) -> list[dict[str, Any]] | None:
-        """Solicita cuotas y conserva únicamente casas sharp configuradas."""
-        if not self.budget.consume("the_odds_api", "month", cost=1):
-            logger.warning("monthly_quota_exhausted provider=the_odds_api")
+        """Obtiene cuotas; cobra una vez por llamada lógica según markets × regions.
+
+        La estimación cubre mercados estándar. `h2h_lay` y otros mercados
+        especiales pueden tener un coste distinto y quedan fuera de Fase 1.
+        """
+        cost = self._compute_cost(regions, markets)
+        if not self._budget.consume("the_odds_api", "month", cost):
+            remaining = self._budget.get_remaining("the_odds_api", "month")
+            logger.warning(
+                "monthly_quota_insufficient provider=the_odds_api cost=%s remaining=%s",
+                cost,
+                remaining,
+            )
             return None
         payload = get_json(
             f"{self.BASE_URL}/sports/{sport_key}/odds",
@@ -105,6 +135,7 @@ class TheOddsAPIClient:
                 "markets": markets,
                 "oddsFormat": "decimal",
             },
+            before_attempt=None,
         )
         if isinstance(payload, dict) and payload.get("error") == "rate_limit":
             return None
@@ -135,4 +166,3 @@ class TheOddsAPIClient:
             ]
             filtered.append(event_copy)
         return filtered
-

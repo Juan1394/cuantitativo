@@ -15,19 +15,21 @@ COMPETITION_MAP = {"SP1": "PD", "E0": "PL", "I1": "SA"}
 
 
 class FootballDataOrgClient:
-    """Cliente de football-data.org; cada solicitud consume una petición/minuto."""
+    """Cliente de football-data.org; cada intento consume una petición/minuto."""
 
     BASE_URL = "https://api.football-data.org/v4"
 
     def __init__(self, settings: object, budget: RateLimitBudgetManager):
+        if not getattr(settings, "football_data_org_key", None):
+            raise ValueError("football_data_org_key is required")
         self.settings = settings
-        self.budget = budget
+        self._budget = budget
 
     def _headers(self) -> dict[str, str]:
-        key = getattr(self.settings, "football_data_org_key", None)
-        if not key:
-            raise ValueError("football_data_org_key no está configurada")
-        return {"X-Auth-Token": str(key)}
+        return {"X-Auth-Token": str(self.settings.football_data_org_key)}
+
+    def _consume_attempt(self) -> bool:
+        return self._budget.consume("football_data_org", "minute", 1)
 
     def get_matches(
         self, competition_code: str, date_from: str, date_to: str
@@ -36,13 +38,11 @@ class FootballDataOrgClient:
         provider_code = COMPETITION_MAP.get(competition_code)
         if provider_code is None:
             raise ValueError(f"competition_code no admitido: {competition_code}")
-        if not self.budget.consume("football_data_org", "minute", cost=1):
-            logger.warning("rate_limit_budget_exhausted provider=football_data_org")
-            return None
         payload = get_json(
             f"{self.BASE_URL}/competitions/{provider_code}/matches",
             headers=self._headers(),
             params={"dateFrom": date_from, "dateTo": date_to},
+            before_attempt=self._consume_attempt,
         )
         if isinstance(payload, dict) and payload.get("error") == "rate_limit":
             return None
@@ -56,14 +56,12 @@ class FootballDataOrgClient:
         return None
 
     def get_match(self, match_id: int) -> dict[str, Any] | None:
-        """Consulta un partido por ID usando su endpoint puntual del proveedor."""
-        if not self.budget.consume("football_data_org", "minute", cost=1):
-            logger.warning("rate_limit_budget_exhausted provider=football_data_org")
-            return None
+        """Consulta un partido por ID; cada intento cuenta en el límite/minuto."""
         payload = get_json(
             f"{self.BASE_URL}/matches/{match_id}",
             headers=self._headers(),
             params={},
+            before_attempt=self._consume_attempt,
         )
         if isinstance(payload, dict) and payload.get("error") == "rate_limit":
             return None
